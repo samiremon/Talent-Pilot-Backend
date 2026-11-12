@@ -1,0 +1,115 @@
+# TalentPilot: full stack in one command.
+#   cp .env.example .env   (then set the passwords)
+#   docker compose up --build
+#
+# Expects the frontend repo cloned next to this one:
+#   ../Talent-Pilot-Frontend   (override with FRONTEND_DIR in .env)
+
+name: talentpilot
+
+services:
+  web:
+    build:
+      context: ${FRONTEND_DIR:-../Talent-Pilot-Frontend}
+    image: talentpilot-web:local
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [frontend]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: .
+    image: talentpilot-api:local
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      MONGODB_URI: mongodb://${MONGO_USER:-talentpilot}:${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}@mongo:27017/talentpilot?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+    ports:
+      - "${API_PORT:-4000}:4000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    networks: [frontend, backend]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-talentpilot}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}
+      MONGO_INITDB_DATABASE: talentpilot
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  # Local email inbox: every email the app sends shows up at http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  mongo-data:
+  redis-data:
