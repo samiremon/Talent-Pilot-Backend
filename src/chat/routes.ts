@@ -71,7 +71,9 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
             ? `Done: the job ${name} was updated.`
             : card.type === 'add_candidate'
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
-              : card.type === 'import_csv'
+              : card.type === 'delete_candidate'
+              ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'import_csv'
               ? `Done: imported ${imported?.added ?? 0} candidate(s)${imported?.duplicates ? `, skipped ${imported.duplicates} duplicate(s)` : ''}.${imported?.taskId ? ' AI scoring has started: you can follow it on the card above or on the job page.' : ''}`
               : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
       const note = await addSystemNote(req.user!.id, text, card.type === 'delete_job' ? null : result?.jobId);

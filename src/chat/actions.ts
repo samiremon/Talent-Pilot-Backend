@@ -13,6 +13,7 @@ import { AppError } from '../errors.js';
 import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js';
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
 import { addManualCandidate } from '../sourcing/manual.js';
+import { deleteCandidate } from '../candidates/deleteCandidate.js';
 import { startScoring, type SourcingDeps } from '../sourcing/service.js';
 import { ActivityModel } from '../models/activity.js';
 import { PendingActionModel, type ActionType } from '../models/chat.js';
@@ -128,6 +129,12 @@ export async function confirmAction(
         const payload = action.payload as { jobId: string; candidate: Record<string, unknown> };
         const added = await addManualCandidate(deps, payload.jobId, { ...payload.candidate, ...(edits ?? {}) }, userId);
         result = { jobId: payload.jobId, candidateId: added.candidateId, name: added.name, taskId: added.task?.id ?? null };
+        break;
+      }
+      case 'delete_candidate': {
+        // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
+        const payload = action.payload as { jobId: string; candidateId: string };
+        result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
         break;
       }
       default:

@@ -88,7 +88,13 @@ export async function listCandidates(jobId: string) {
   const rows = await CandidateModel.find({ jobId: id }).sort({ score: -1, createdAt: 1 }).lean();
   return rows.map(({ _id, __v, jobId: job, ...rest }) => {
     void __v;
-    return { id: String(_id), jobId: String(job), ...rest };
+    return {
+      id: String(_id),
+      jobId: String(job),
+      ...rest,
+      // Older rows were flagged only in the reason text ("⚠ Profile contains instructions…").
+      flagged: Boolean(rest.flagged) || (rest.scoreReason ?? '').startsWith('⚠'),
+    };
   });
 }
 

@@ -133,7 +133,7 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
     let skipped = 0; // no profile text
     let scored = 0; // got a score
     let notScored = 0; // the AI didn't return a result even after a second try
-    const total = todo.length;
+    let total = todo.length;
     await updateTask(events, taskId, {
       status: 'running',
       attempts: attempt.number,
@@ -142,8 +142,30 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
     });
 
     try {
-      for (let i = 0; i < todo.length; i += BATCH_SIZE) {
+      // Everyone we've picked up in this run (so nobody is tried twice in one run).
+      const attempted = new Set(todo.map((c) => String(c._id)));
+      let i = 0;
+      for (;;) {
+        if (i >= todo.length) {
+          // People added WHILE this run was going (e.g. two "Add candidate" clicks in a
+          // row: the second one joins this run instead of starting a new one). Without this
+          // check they'd be left unscored until some later run.
+          const late = await CandidateModel.find({
+            jobId: job._id,
+            score: null,
+            scoreReason: null,
+            _id: { $nin: [...attempted].map((id) => new Types.ObjectId(id)) },
+          })
+            .sort({ createdAt: 1 })
+            .lean();
+          if (late.length === 0) break;
+          for (const c of late) attempted.add(String(c._id));
+          todo.push(...late);
+          total = todo.length;
+          await updateTask(events, taskId, { progress: { total }, message: `Scored ${done} of ${total}…` });
+        }
         const batch = todo.slice(i, i + BATCH_SIZE).map((c) => ({ doc: c, id: String(c._id), text: candidateText(c) }));
+        i += batch.length;
 
         // No profile text (a job title alone isn't enough to judge someone): don't let the
         // AI guess. Leave the score empty and say why.
@@ -200,6 +222,7 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
                     score: r.score,
                     scoreReason: (flagged ? '⚠ Profile contains instructions aimed at the AI (ignored). ' : '') + r.reason.trim().slice(0, 300),
                     evidence: groundEvidence(r.evidence, c.text),
+                    flagged,
                   },
                 },
               );

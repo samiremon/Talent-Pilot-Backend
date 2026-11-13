@@ -12,6 +12,7 @@
  * (For PATCH/DELETE, ":id" can be the long id or the short one, e.g. JOB-0007.)
  */
 import { Router } from 'express';
+import { deleteCandidate } from '../candidates/deleteCandidate.js';
 import { asyncHandler } from '../errors.js';
 import {
   createJob,
@@ -68,6 +69,14 @@ export function jobsRouter(): Router {
       const result = await deleteJob(req.params.id as string, { userId: req.user!.id });
       req.log.info({ jobId: result.id }, 'Job deleted');
       res.json(result);
+    }),
+  );
+
+  // Remove one candidate (the trash button). Same function as the AI's confirmed card.
+  router.delete(
+    '/:id/candidates/:candidateId',
+    asyncHandler(async (req, res) => {
+      res.json(await deleteCandidate(req.params.id as string, req.params.candidateId as string, { userId: req.user!.id }));
     }),
   );
 

@@ -129,6 +129,8 @@ describe('CSV upload + background scoring', () => {
     // The candidate who tried to instruct the AI is flagged, and doesn't get a top score.
     const arif = await CandidateModel.findOne({ email: 'arif.khan@example.com' }).lean();
     expect(arif?.scoreReason).toMatch(/instructions aimed at the AI/);
+    expect(arif?.flagged).toBe(true); // shown as a red row
+    expect(sara?.flagged).toBe(false);
     expect(arif!.score!).toBeLessThan(sara!.score!);
 
     // No profile text: no made-up score, just the reason.
@@ -220,6 +222,24 @@ describe('when the AI skips people', () => {
     expect(done?.progress?.failed).toBe(1);
     // They're left unscored (not given a made-up score), ready for the next run.
     expect(await CandidateModel.countDocuments({ jobId: job._id, score: null, scoreReason: null })).toBe(1);
+  });
+
+  it('also scores people added while the run was already going', async () => {
+    const { job, events, task } = await setup();
+    let calls = 0;
+    const ai = {
+      mode: 'live',
+      async structured<T>(req: { user: string }) {
+        calls++;
+        // During the first AI call, someone clicks "Add candidate" again.
+        if (calls === 1) await addCandidates(job._id, 'manual', [{ name: 'Late', email: 'late@example.com', profileText: 'React developer' }]);
+        const { candidates } = JSON.parse(req.user) as { candidates: { id: string }[] };
+        return { data: { results: candidates.map((c) => ({ id: c.id, score: 60, reason: 'ok', evidence: [] })) } as T, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    } as unknown as Ai;
+    await scoreCandidatesProcessor({ ai, events })({ taskId: task.id, jobId: String(job._id) }, { number: 1, isLast: true });
+    expect(await CandidateModel.countDocuments({ jobId: job._id, score: 60 })).toBe(4);
+    expect((await TaskModel.findById(task.id).lean())?.message).toBe('Done: scored 4 of 4.');
   });
 });
 
@@ -357,5 +377,54 @@ describe('ranking', () => {
     const { ranks, total } = await candidateRanks(jobId);
     expect(total).toBe(4);
     expect(docs.map((d) => ranks.get(String(d._id)) ?? null)).toEqual([1, 2, 2, 4, null]);
+  });
+});
+
+describe('removing a candidate', () => {
+  const PERSON = { name: 'Delete Me', email: 'delete.me@example.com', profileText: 'React and TypeScript, 3 years.' };
+
+  it('works from the trash button, and only within the right job', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    const other = (await agent.post('/jobs').send({ ...JOB, title: 'Other job' }).expect(201)).body.job;
+    const added = (await agent.post(`/jobs/${job.id}/candidates`).send(PERSON).expect(201)).body;
+    await queue.idle();
+    const id = added.candidateId ?? added.candidate?.id;
+    expect(id).toBeTruthy();
+
+    // Wrong job: refused, nothing deleted.
+    await agent.delete(`/jobs/${other.id}/candidates/${id}`).expect(404);
+    expect(await CandidateModel.countDocuments({ _id: id })).toBe(1);
+
+    const res = await agent.delete(`/jobs/${job.id}/candidates/${id}`).expect(200);
+    expect(res.body).toMatchObject({ name: 'Delete Me', jobCode: 'JOB-0001' });
+    expect(await CandidateModel.countDocuments({ _id: id })).toBe(0);
+    const activity = (await agent.get(`/jobs/${job.id}/activity`).expect(200)).body;
+    const items = activity.activity ?? activity.items ?? activity;
+    expect(JSON.stringify(items)).toMatch(/Removed candidate Delete Me/);
+  });
+
+  it('works from the AI card after Confirm', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    await agent.post(`/jobs/${job.id}/candidates`).send(PERSON).expect(201);
+    await queue.idle();
+    const person = await CandidateModel.findOne({ name: 'Delete Me' }).lean();
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { proposeAction } = await import('../src/chat/actions.js');
+    const card = await proposeAction(String(user!._id), 'delete_candidate', {
+      jobId: job.id,
+      jobCode: job.jobCode,
+      title: job.title,
+      candidateId: String(person!._id),
+      name: person!.name,
+    });
+    expect(await CandidateModel.countDocuments({ name: 'Delete Me' })).toBe(1); // nothing until Confirm
+
+    const res = await agent.post(`/chat/actions/${card._id}/confirm`).send({}).expect(200);
+    expect(res.body.message.text).toBe('Done: removed Delete Me from JOB-0001.');
+    expect(await CandidateModel.countDocuments({ name: 'Delete Me' })).toBe(0);
   });
 });

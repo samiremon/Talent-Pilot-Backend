@@ -29,6 +29,7 @@ import { planCandidates } from '../candidates/addCandidates.js';
 import { candidateRanks, getJob, listCandidates, resolveJob, updateJobInput } from '../jobs/service.js';
 import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
+import { jobCode } from '../models/counter.js';
 import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
 import { proposeAction } from './actions.js';
@@ -44,7 +45,7 @@ How you work:
 - You can NOT change anything yourself. Tools that "create" or "change" things only PROPOSE: the app shows the recruiter a card with Confirm/Cancel. Never say something was created/sent/changed unless the conversation shows the recruiter confirmed it.
 - When the recruiter pastes a job description (or asks to create a job from one), call propose_job_from_description. Then briefly say what you found (e.g. the title and anything important that was missing). Do NOT write instructions about checking the card or pressing Confirm: the app adds that sentence itself.
 - Never invent facts about jobs or candidates. Use the workspace data below and your tools. If you don't know, say so.
-- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) edit a job (propose_job_edit) or delete a job (propose_job_delete), (3) add ONE candidate to a job (propose_add_candidate), each shown as a card to confirm; after adding, the candidate is scored automatically, (4) answer questions about the recruiter's jobs and candidates using the workspace data and your tools: list_job_candidates (10 at a time, ask for the next page if needed) and find_candidate (any one person's exact score and rank). Never say you can't see a candidate's score: look them up. Candidates can also be added in bulk with a CSV (the 📎 button in the chat, or Upload CSV on the job page).
+- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) edit a job (propose_job_edit) or delete a job (propose_job_delete), (3) add ONE candidate to a job (propose_add_candidate) or remove one (propose_candidate_delete), each shown as a card to confirm; after adding, the candidate is scored automatically, (4) answer questions about the recruiter's jobs and candidates using the workspace data and your tools: list_job_candidates (10 at a time, ask for the next page if needed) and find_candidate (any one person's exact score and rank). Never say you can't see a candidate's score: look them up. Candidates can also be added in bulk with a CSV (the 📎 button in the chat, or Upload CSV on the job page).
 - When adding a candidate, use ONLY details the recruiter gave you. Put their experience/skills description in profileText, their job title in headline. Leave anything not mentioned empty; never invent emails, links or experience. If no job is open on screen and it's unclear which job, ask which job first.
 - Jobs have short ids like JOB-0007 (shown in the workspace data). Use them when calling tools and when talking about jobs. If it's unclear which job the recruiter means, ask instead of guessing.
 - For edits, only include the fields the recruiter asked to change, with the new values exactly as they said them.
@@ -101,13 +102,15 @@ export interface AgentInput {
  * (not left to the AI), so the recruiter is always told what to do with the card.
  */
 export const CARD_FOOTER = "Please verify the details in the card below, add anything that's missing, then press **Confirm**.";
+/** For delete cards there's nothing to fill in, so a different sentence. */
+export const DELETE_CARD_FOOTER = 'Please check the card below. Nothing is removed until you press the red button.';
 
 /**
  * Adds the footer once (and only when a card was proposed). If the AI ended its own reply
  * with a similar "review the card / confirm" paragraph anyway, that paragraph is dropped
  * so the instruction isn't said twice.
  */
-export function withCardFooter(reply: string, hasCard: boolean): string {
+export function withCardFooter(reply: string, hasCard: boolean, footer: string = CARD_FOOTER): string {
   if (!hasCard) return reply;
   const paragraphs = reply.trim().split(/\n\s*\n/);
   const last = paragraphs.at(-1) ?? '';
@@ -115,7 +118,7 @@ export function withCardFooter(reply: string, hasCard: boolean): string {
     /\b(card|confirm(ed)?)\b/i.test(last) && /\b(review|check|confirm|verify)\b/i.test(last) && last.length < 300;
   if (isOwnInstruction) paragraphs.pop();
   const body = paragraphs.join('\n\n').trim();
-  return body ? `${body}\n\n${CARD_FOOTER}` : CARD_FOOTER;
+  return body ? `${body}\n\n${footer}` : footer;
 }
 
 export interface AgentResult {
@@ -128,6 +131,8 @@ export interface AgentResult {
 export async function runAgent(input: AgentInput): Promise<AgentResult> {
   const { ai, userId, userName, jobId, history, text, recentUserTexts = [] } = input;
   const actionIds: string[] = [];
+  // True when a delete card (job or candidate) was proposed: the footer then says so.
+  let deleteProposed = false;
   const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   const target = jobId ? { jobId } : undefined;
 
@@ -250,6 +255,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
           candidateCount: current.totalCandidates,
         });
         actionIds.push(String(action._id));
+        deleteProposed = true;
         return `A delete card for ${current.jobCode} "${current.title}" (${current.totalCandidates} candidates would be removed) is now shown with Confirm/Cancel. Nothing is deleted until the recruiter presses Confirm.`;
       },
       {
@@ -257,6 +263,53 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
         description:
           'Propose deleting a job and its candidates. Shows the recruiter a red confirmation card. Only use when the recruiter clearly asks to delete/remove a job.',
         schema: z.object({ job: z.string().describe('The job id, e.g. "JOB-0007"') }),
+      },
+    ),
+    tool(
+      async ({ name, job }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job this candidate is in (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const query = name.trim();
+        if (query.length < 2) return 'Ask the recruiter for the candidate\'s name.';
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // An exact name match wins; otherwise "name contains".
+        let matches = await CandidateModel.find({ jobId: found._id, name: new RegExp(`^${escaped}$`, 'i') }).limit(MAX_MATCHES).lean();
+        if (matches.length === 0) matches = await CandidateModel.find({ jobId: found._id, name: new RegExp(escaped, 'i') }).limit(MAX_MATCHES).lean();
+        const code = jobCode(found.jobNumber);
+        if (matches.length === 0) return `No candidate named "${clean(query, 60)}" in ${code}.`;
+        if (matches.length > 1) {
+          return `Several candidates in ${code} match "${clean(query, 60)}": ${matches.map((m) => `${clean(m.name, 60)}${m.email ? ` (${m.email})` : ''}`).join('; ')}. Ask the recruiter which one (use the full name).`;
+        }
+        const c = matches[0]!;
+        const action = await proposeAction(userId, 'delete_candidate', {
+          jobId: String(found._id),
+          jobCode: code,
+          title: found.title,
+          candidateId: String(c._id),
+          name: c.name,
+          email: c.email,
+          headline: c.headline,
+          score: c.score,
+          status: c.status,
+        });
+        actionIds.push(String(action._id));
+        deleteProposed = true;
+        return `A red "Remove candidate" card for ${clean(c.name, 60)} in ${code} is now shown with Confirm/Cancel. Nothing is removed until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_candidate_delete',
+        description:
+          'Propose removing ONE candidate from a job. Shows the recruiter a red confirmation card. Only use when the recruiter clearly asks to delete/remove a candidate.',
+        schema: z.object({
+          name: z.string().describe('The candidate\'s name as the recruiter said it'),
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+        }),
       },
     ),
     tool(
@@ -442,7 +495,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
 
   return {
     reply: actionIds.length
-      ? withCardFooter(reply, true)
+      ? withCardFooter(reply, true, deleteProposed ? DELETE_CARD_FOOTER : CARD_FOOTER)
       : reply || "Sorry, I couldn't come up with an answer. Please try again.",
     actionIds,
     usage,
