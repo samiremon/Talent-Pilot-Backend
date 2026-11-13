@@ -47,7 +47,8 @@ export function parseId(id: string, what = 'Job'): Types.ObjectId {
 }
 
 /** The shape of a job sent to the browser. */
-function present(job: Record<string, unknown> & { _id: unknown }, counts: StatusCounts) {
+function present<T extends { _id: unknown; description: string; __v?: unknown }>(job: T, counts: StatusCounts) {
+  // Generic <T> keeps the real field types (title, status, ...) for whoever calls this.
   const { _id, __v, description, ...rest } = job;
   void __v;
   return {
