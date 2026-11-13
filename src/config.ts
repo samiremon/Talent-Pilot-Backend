@@ -82,6 +82,17 @@ const envSchema = z.object({
   // --- AI ---
   // Groq API key (free at https://console.groq.com/keys). Empty = "mock mode":
   // the app still works end to end with built-in sample answers, no key needed.
+  // Outreach emails. "sandbox" (default) = every outreach email goes to Mailpit, the fake
+  // inbox (http://localhost:8025): no real candidate gets mail. "live" = real sending with
+  // the SMTP_* settings above. Switch only when you really mean to email candidates.
+  OUTREACH_MODE: z.enum(['sandbox', 'live']).default('sandbox'),
+  OUTREACH_SANDBOX_SMTP_HOST: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().min(1).default('localhost')),
+  OUTREACH_SANDBOX_SMTP_PORT: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).max(65535).default(1025)),
+  // At most this many outreach emails in any 24 hours (all jobs together).
+  OUTREACH_DAILY_LIMIT: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).max(10_000).default(50)),
+  // How long "one day" is for follow-ups (Day 3, Day 7). 86400 = a real day; set e.g. 60 in
+  // a demo so the follow-ups arrive within minutes.
+  OUTREACH_DAY_SECONDS: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).default(86_400)),
   // Serper (Google search API) for finding candidates on the web. Blank = sample mode.
   SERPER_API_KEY: optional(z.string().trim().min(20, 'looks too short (copy it from serper.dev)')),
   GROQ_API_KEY: optional(z.string().trim().startsWith('gsk_', 'must start with gsk_ (copy it from console.groq.com/keys)')),
@@ -125,6 +136,8 @@ export type Config = {
   smtp: { host: string; port: number; secure: boolean; user?: string; pass?: string; from: string };
   /** AI settings. `apiKey` undefined = mock mode. */
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
+  /** Outreach emails: where they go, how many a day, how long a "day" is. */
+  outreach: { mode: 'sandbox' | 'live'; sandboxHost: string; sandboxPort: number; dailyLimit: number; daySeconds: number };
   /** Web search for candidates. `serperKey` undefined = sample mode. */
   search: { serperKey?: string };
   /** Optional limits shown on the token dashboard. */
@@ -188,6 +201,13 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     },
     aiLimits: { dailyTokens: e.AI_DAILY_TOKEN_LIMIT, weekBudget: e.AI_TOKEN_BUDGET_WEEK, monthBudget: e.AI_TOKEN_BUDGET_MONTH },
     search: { serperKey: e.SERPER_API_KEY },
+    outreach: {
+      mode: e.OUTREACH_MODE,
+      sandboxHost: e.OUTREACH_SANDBOX_SMTP_HOST,
+      sandboxPort: e.OUTREACH_SANDBOX_SMTP_PORT,
+      dailyLimit: e.OUTREACH_DAILY_LIMIT,
+      daySeconds: e.OUTREACH_DAY_SECONDS,
+    },
     ai: {
       apiKey: e.GROQ_API_KEY,
       models: { agent: e.AI_MODEL_AGENT, bulk: e.AI_MODEL_BULK, safety: e.AI_MODEL_SAFETY },

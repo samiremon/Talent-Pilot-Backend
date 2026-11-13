@@ -28,6 +28,9 @@ export const ACTIVITY_TYPES = [
   'status_changed',
   'status_undone',
   'email_sent',
+  'outreach_created',
+  'outreach_drafted',
+  'outreach_approved',
   'reply_received',
   'meeting_booked',
 ] as const;

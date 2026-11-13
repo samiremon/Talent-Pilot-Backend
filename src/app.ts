@@ -19,6 +19,8 @@ import { chatRouter } from './chat/routes.js';
 import { authRouter, type AuthOptions } from './auth/routes.js';
 import { jobsRouter, statsRouter } from './jobs/routes.js';
 import { sourcingRouter } from './sourcing/routes.js';
+import { outreachRouter } from './outreach/routes.js';
+import type { OutreachSettings } from './outreach/sending.js';
 import { createMemoryEvents, type TaskEvents } from './tasks/events.js';
 import { createInlineQueue, type TaskQueue } from './tasks/queue.js';
 import { isDatabaseReady } from './db.js';
@@ -39,6 +41,8 @@ export interface AppOptions {
   /** The background-job queue + live progress events. Tests default to in-process ones. */
   queue?: TaskQueue;
   events?: TaskEvents;
+  /** Outreach sending rules (sandbox/live, daily limit, day length). Default: sandbox. */
+  outreach?: OutreachSettings;
   /** Web search mode, shown in the Find candidates dialog. Default: sample. */
   searchMode?: 'serper' | 'sample';
   /** Optional token limits/budgets for the token dashboard (see config.ts). */
@@ -61,6 +65,7 @@ export function createApp({
   events = createMemoryEvents(),
   queue = createInlineQueue(() => ({})),
   searchMode = 'sample',
+  outreach = { mode: 'sandbox', dailyLimit: 50, daySeconds: 86_400 },
 }: AppOptions): Express {
   const app = express();
 
@@ -123,10 +128,11 @@ export function createApp({
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
   // Sourcing first (CSV upload, scoring, live events), then the rest of /jobs.
   app.use('/jobs', requireAuth, sourcingRouter({ queue, events, searchMode }));
+  app.use('/jobs', requireAuth, outreachRouter({ queue, events, outreach }));
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
-  app.use('/chat', requireAuth, chatRouter(ai, { queue, events, searchMode }));
+  app.use('/chat', requireAuth, chatRouter(ai, { queue, events, searchMode, outreach }));
   app.use('/activity', requireAuth, activityRouter(ai, aiLimits));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.

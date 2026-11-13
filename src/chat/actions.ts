@@ -16,6 +16,12 @@ import { addManualCandidate } from '../sourcing/manual.js';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { updateCandidateContact } from '../candidates/updateCandidate.js';
 import { changeStatuses } from '../candidates/statusChange.js';
+import { approveCampaign, createCampaign, SEQUENCES, type OutreachDeps } from '../outreach/service.js';
+
+/** The outreach settings for the chat's campaign cards (sandbox / 50 a day by default). */
+function outreachDeps(deps: SourcingDeps): OutreachDeps {
+  return { queue: deps.queue, events: deps.events, outreach: deps.outreach ?? { mode: 'sandbox', dailyLimit: 50, daySeconds: 86_400 } };
+}
 import type { CandidateStatus } from '../pipeline/status.js';
 import { SOURCE_LABELS, type SearchSource } from '../sourcing/search.js';
 import { startSourcing } from '../sourcing/webSourcing.js';
@@ -140,6 +146,25 @@ export async function confirmAction(
         // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
         const payload = action.payload as { jobId: string; candidateId: string };
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
+        break;
+      }
+      case 'create_campaign': {
+        // payload = { jobId, sequence, candidates: [{ id, name, email }] }. The recruiter may
+        // have unticked people or switched single email <-> Day 0/3/7 on the card.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; jobCode?: string; sequence: 'single' | 'sequence'; candidates: { id: string }[] };
+        const sequence = (edits?.sequence as 'single' | 'sequence' | undefined) ?? payload.sequence;
+        const ids = (edits?.candidateIds as string[] | undefined) ?? payload.candidates.map((c) => c.id);
+        const made = await createCampaign(outreachDeps(deps), payload.jobId, userId, { candidateIds: ids, stepDays: SEQUENCES[sequence] });
+        result = { jobId: payload.jobId, jobCode: payload.jobCode, campaignId: made.campaignId, taskId: made.task.id, candidates: made.candidates, steps: made.steps };
+        break;
+      }
+      case 'approve_campaign': {
+        // payload = { jobId, campaignId, ... }. Same function as "Approve & send" on the Emails tab.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; jobCode?: string; campaignId: string };
+        const approved = await approveCampaign(outreachDeps(deps), payload.jobId, payload.campaignId, userId, 'ai');
+        result = { jobId: payload.jobId, jobCode: payload.jobCode, campaignId: payload.campaignId, emails: approved.emails, mode: approved.mode, taskId: approved.task.id };
         break;
       }
       case 'change_status': {

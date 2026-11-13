@@ -12,6 +12,7 @@
  */
 import { createAi } from './ai/client.js';
 import { createSearchClient } from './sourcing/search.js';
+import { createOutreachMailer } from './email/mailer.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
 import { createLogger } from './logger.js';
@@ -40,7 +41,11 @@ const events = createRedisEvents(config.redisUrl);
 const search = createSearchClient(config.search.serperKey);
 // The worker also ADDS tasks (a finished web search queues scoring), so it needs the queue too.
 const queue = createBullQueue(config.redisUrl);
-const worker = startWorker(config.redisUrl, buildProcessors({ ai, events, search, queue: () => queue }), logger);
+const worker = startWorker(
+  config.redisUrl,
+  buildProcessors({ ai, events, search, queue: () => queue, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach }),
+  logger,
+);
 logger.info({ ai: ai.mode, search: search.mode }, 'Worker ready, waiting for tasks');
 
 // Graceful stop: finish the task in progress (BullMQ waits for it), then close everything.

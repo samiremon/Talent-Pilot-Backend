@@ -31,6 +31,8 @@ import { planCandidates } from '../candidates/addCandidates.js';
 import { candidateRanks, getJob, listCandidates, resolveJob, unscoredFilter, updateJobInput } from '../jobs/service.js';
 import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
+import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
+import { eligibleCandidates } from '../outreach/service.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
 import { CANDIDATE_STATUSES, checkMove, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 import { jobCode } from '../models/counter.js';
@@ -47,8 +49,8 @@ Scope: ONLY hiring work in TalentPilot (jobs, candidates, scores, pipeline, outr
 Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
-- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For ANY question about candidates' emails (who has one, who doesn't), use list_candidate_emails.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept/reject candidates or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): outreach emails, replies, meetings. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To EMAIL candidates (outreach, a campaign, "send them an email", a Day 0/3/7 sequence) use propose_campaign, and propose_approve_campaign to approve sending.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept/reject candidates or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Not available yet (say "coming soon"): replies, meetings. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -443,6 +445,84 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
+      async ({ job, sequence, names, top }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job the campaign is for (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        // Only Accepted candidates with an email (and not already in a running campaign).
+        let people = await eligibleCandidates(found._id);
+        const acceptedNoEmail = await CandidateModel.countDocuments({ jobId: found._id, status: 'accepted', email: null });
+        if (names?.length) {
+          const wanted = names.map((n) => n.trim().toLowerCase());
+          people = people.filter((p) => wanted.some((w) => p.name.toLowerCase() === w || p.name.toLowerCase().includes(w)));
+        } else if (top) {
+          people = people.slice(0, top);
+        }
+        if (people.length === 0) {
+          return `Nobody in ${code} can be emailed yet: only Accepted candidates with an email address can be added${acceptedNoEmail ? ` (${acceptedNoEmail} accepted candidate(s) have no email: add it with the Edit button)` : ''}. Tell the recruiter, e.g. accept candidates first.`;
+        }
+        const seq = sequence ?? 'single';
+        const notes = acceptedNoEmail ? [`${acceptedNoEmail} accepted candidate(s) have no email address, so they can't be added.`] : [];
+        const action = await proposeAction(
+          userId,
+          'create_campaign',
+          { jobId: String(found._id), jobCode: code, title: found.title, sequence: seq, candidates: people.map((p) => ({ id: String(p._id), name: p.name, email: p.email, score: p.score ?? null })) },
+          notes,
+        );
+        actionIds.push(String(action._id));
+        cardIntros.push(
+          `Here's a card to create an outreach campaign for ${people.length} accepted candidate${people.length === 1 ? '' : 's'} with an email in ${code} (${seq === 'single' ? 'a single email' : 'Day 0 / 3 / 7: a first email and 2 follow-ups'}). After you confirm, the AI writes personal drafts for you to check; nothing is sent until you approve them.`,
+        );
+        return `A "Create campaign" card for ${people.length} candidate(s) in ${code} is now shown with Confirm/Cancel.`;
+      },
+      {
+        name: 'propose_campaign',
+        description:
+          'Propose an outreach email campaign for a job: a single email or a Day 0 / 3 / 7 sequence, to Accepted candidates with an email address (optionally only some, by names or the top N). Shows a card to confirm; then the AI drafts personal emails for the recruiter to review. Nothing is sent before a separate approval.',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          sequence: z.enum(['single', 'sequence']).optional().describe('"single" = one email (default), "sequence" = Day 0, Day 3 and Day 7 follow-ups'),
+          names: z.array(z.string()).optional().describe('Only these candidates (names as the recruiter said them)'),
+          top: z.number().int().min(1).max(200).optional().describe('Only the best N eligible candidates'),
+        }),
+      },
+    ),
+    tool(
+      async ({ job }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const campaign = await CampaignModel.findOne({ jobId: found._id, status: { $in: ['draft', 'drafting'] } }).sort({ createdAt: -1 }).lean();
+        if (!campaign) return `There's no campaign waiting for approval in ${code}. Create one first (propose_campaign).`;
+        if (campaign.status === 'drafting') return `The AI is still writing the drafts for ${code}. Approve when it's done.`;
+        const emails = await OutreachMessageModel.countDocuments({ campaignId: campaign._id, status: 'draft' });
+        const people = (await OutreachMessageModel.distinct('candidateId', { campaignId: campaign._id, status: 'draft' })).length;
+        const action = await proposeAction(userId, 'approve_campaign', {
+          jobId: String(found._id), jobCode: code, title: found.title, campaignId: String(campaign._id), name: campaign.name, emails, candidates: people, stepDays: campaign.stepDays, mode: campaign.mode,
+        });
+        actionIds.push(String(action._id));
+        cardIntros.push(`Here's a card to approve and send the ${campaign.name} campaign: ${emails} email${emails === 1 ? '' : 's'} to ${people} candidate${people === 1 ? '' : 's'}. You can still check the drafts in the Emails tab.`);
+        return `An "Approve & send" card for ${code} is now shown with Confirm/Cancel.`;
+      },
+      {
+        name: 'propose_approve_campaign',
+        description: "Propose approving (and so sending) a job's outreach campaign that has its drafts ready. Shows a card to confirm. Use when the recruiter says to approve/send the emails.",
+        schema: z.object({ job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.') }),
+      },
+    ),
+    tool(
       async ({ job, to, names, top }) => {
         const ref = job || jobId;
         if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
@@ -653,7 +733,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       {
         name: 'list_candidate_emails',
         description:
-          "Show the recruiter the COMPLETE list of a job's candidates whose email was found (with the emails), or who have no email, or both. The list goes to the recruiter directly, exactly from the database. ALWAYS use this for any question about candidates' emails (who has one, who doesn't, what their emails are).",
+          "Show the recruiter the COMPLETE list of a job's candidates whose email address was found (with the addresses), or who have no email address, or both. The list goes to the recruiter directly, exactly from the database. Use this for questions about WHO HAS an email address (who has one, who doesn't, what it is). NOT for sending emails or outreach: that's propose_campaign.",
         schema: z.object({
           job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
           which: z.enum(['found', 'missing', 'all']).optional().describe('"found" = with an email (default), "missing" = without one, "all" = both lists'),

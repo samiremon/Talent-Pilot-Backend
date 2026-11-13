@@ -85,6 +85,16 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'create_campaign'
+              ? (() => {
+                  const r = card.result as { jobCode?: string; candidates?: number; steps?: number[] } | null;
+                  return `Done: created the campaign for ${r?.candidates ?? 0} candidate(s) in ${r?.jobCode ?? 'the job'} (${(r?.steps?.length ?? 1) === 1 ? 'single email' : `Day ${r!.steps!.join(' / ')}`}). The AI is writing the drafts now; I'll show you a preview to approve when they're ready. Nothing is sent before you approve.`;
+                })()
+            : card.type === 'approve_campaign'
+              ? (() => {
+                  const r = card.result as { emails?: number; mode?: string } | null;
+                  return `Done: approved ${r?.emails ?? 0} email(s). Sending runs in the background${r?.mode === 'sandbox' ? ', into the sandbox inbox (Mailpit, http://localhost:8025): no real candidate gets mail' : ''}. Follow-ups go out on their day and stop if someone replies.`;
+                })()
             : card.type === 'change_status'
               ? (() => {
                   const r = card.result as { to?: string; changed?: { name: string }[]; skipped?: { name: string; reason: string }[] } | null;

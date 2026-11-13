@@ -24,6 +24,7 @@ import { ChatMessageModel, PendingActionModel } from '../models/chat.js';
 import { JobModel } from '../models/job.js';
 import { jobCode } from '../models/counter.js';
 import { TaskModel } from '../models/task.js';
+import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
 import { proposeAction } from './actions.js';
 import { presentMessages } from './service.js';
 
@@ -47,7 +48,7 @@ interface FollowUpResult {
 export async function postScoringFollowUp(actionId: string, userId: string) {
   const action = await PendingActionModel.findOne({ _id: parseId(actionId, 'Card'), userId: new Types.ObjectId(userId) });
   if (!action) throw AppError.notFound('Card not found');
-  if (action.status !== 'confirmed' || !['add_candidate', 'import_csv', 'find_candidates', 'score_candidates'].includes(action.type)) {
+  if (action.status !== 'confirmed' || !['add_candidate', 'import_csv', 'find_candidates', 'score_candidates', 'create_campaign'].includes(action.type)) {
     throw new AppError(400, 'NO_FOLLOW_UP', 'This card has no scoring result to report.');
   }
   const result = (action.result ?? {}) as FollowUpResult;
@@ -82,6 +83,15 @@ export async function postScoringFollowUp(actionId: string, userId: string) {
   const jobId = result.jobId!;
   const job = await JobModel.findById(jobId).lean();
   if (!job) throw AppError.notFound('Job not found');
+
+  // Campaign drafts are ready: a preview + the "Approve & send" card (its own path).
+  if (action.type === 'create_campaign') {
+    const message = await postDraftsReady(userId, job, String((result as { campaignId?: string }).campaignId));
+    action.set({ result: { ...result, followUpMessageId: message!.id } });
+    action.markModified('result');
+    await action.save();
+    return message;
+  }
   const code = jobCode((job as { jobNumber?: number | null }).jobNumber) ?? 'the job';
   const { ranks, total } = await candidateRanks(job._id);
 
@@ -183,3 +193,44 @@ export async function postWithRetryCard(userId: string, text: string, job: { _id
   const row = await ChatMessageModel.create({ userId: new Types.ObjectId(userId), role: 'assistant', text: fullText, jobId: job._id, actionId });
   return (await presentMessages([row.toObject()]))[0];
 }
+
+/**
+ * "Drafts are ready": the first email as a preview, and an "Approve & send" card. The
+ * recruiter can still read and edit every draft in the Emails tab first.
+ */
+async function postDraftsReady(userId: string, job: { _id: Types.ObjectId; title: string; jobNumber?: number | null }, campaignId: string) {
+  const code = jobCode(job.jobNumber ?? null);
+  const campaign = Types.ObjectId.isValid(campaignId) ? await CampaignModel.findById(campaignId).lean() : null;
+  if (!campaign) return postPlain(userId, job._id, `That campaign for ${code} no longer exists.`);
+  if (campaign.status !== 'draft') return postPlain(userId, job._id, `The ${campaign.name} campaign was already approved.`);
+  const drafts = await OutreachMessageModel.find({ campaignId: campaign._id, status: 'draft' }).sort({ step: 1, createdAt: 1 }).lean();
+  const people = new Set(drafts.map((d) => String(d.candidateId))).size;
+  const empty = drafts.filter((d) => !d.body.trim()).length;
+  const preview = drafts.find((d) => d.step === 0 && d.body.trim());
+  const name = preview ? (await CandidateModel.findById(preview.candidateId, { name: 1 }).lean())?.name : null;
+  const steps = campaign.stepDays.length === 1 ? 'a single email' : `${campaign.stepDays.length} steps (Day ${campaign.stepDays.join(' / ')})`;
+  const lines = [`The drafts for ${code} are ready: ${people} candidate${people === 1 ? '' : 's'}, ${steps}.`];
+  if (preview) lines.push(`Here's the first one, to **${name ?? preview.to}** (${preview.to}):\n\n**Subject:** ${preview.subject}\n\n${preview.body}`);
+  if (empty) lines.push(`${empty} draft${empty === 1 ? '' : 's'} couldn't be written by the AI: please write ${empty === 1 ? 'it' : 'them'} in the Emails tab before approving.`);
+  lines.push(`You can read and edit every draft in the job's **Emails** tab.${campaign.mode === 'sandbox' ? ' Sandbox mode: emails go to the test inbox (Mailpit), not to real candidates.' : ''} Nothing is sent until you approve.`);
+
+  const card = await proposeAction(userId, 'approve_campaign', {
+    jobId: String(job._id),
+    jobCode: code,
+    title: job.title,
+    campaignId: String(campaign._id),
+    name: campaign.name,
+    emails: drafts.length,
+    candidates: people,
+    stepDays: campaign.stepDays,
+    mode: campaign.mode,
+  });
+  const row = await ChatMessageModel.create({ userId: new Types.ObjectId(userId), role: 'assistant', text: lines.join('\n\n'), jobId: job._id, actionId: card._id });
+  return (await presentMessages([row.toObject()]))[0];
+}
+
+async function postPlain(userId: string, jobId: Types.ObjectId, text: string) {
+  const row = await ChatMessageModel.create({ userId: new Types.ObjectId(userId), role: 'assistant', text, jobId });
+  return (await presentMessages([row.toObject()]))[0];
+}
+

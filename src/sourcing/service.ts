@@ -16,6 +16,8 @@ export interface SourcingDeps {
   events: TaskEvents;
   /** 'serper' = real web search, 'sample' = made-up sample profiles (no SERPER_API_KEY). */
   searchMode?: 'serper' | 'sample';
+  /** Outreach sending rules (for the chat's campaign cards). */
+  outreach?: { mode: 'sandbox' | 'live'; dailyLimit: number; daySeconds: number };
 }
 
 /**

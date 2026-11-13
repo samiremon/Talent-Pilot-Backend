@@ -61,3 +61,17 @@ export function createMemoryMailer(): Mailer & { sent: EmailMessage[] } {
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
+
+/**
+ * The mailer for OUTREACH emails to candidates. Sandbox (default): always Mailpit, even
+ * if real SMTP is configured for sign-up emails, so testing never emails real people.
+ * Live: the real SMTP settings.
+ */
+export function createOutreachMailer(
+  outreach: { mode: 'sandbox' | 'live'; sandboxHost: string; sandboxPort: number },
+  smtp: SmtpSettings,
+): Mailer {
+  return outreach.mode === 'live'
+    ? createMailer(smtp)
+    : createMailer({ host: outreach.sandboxHost, port: outreach.sandboxPort, secure: false, from: smtp.from });
+}

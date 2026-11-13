@@ -62,6 +62,11 @@ services:
       # AI. Empty key = mock mode (works without any account).
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       SERPER_API_KEY: ${SERPER_API_KEY:-}
+      OUTREACH_MODE: ${OUTREACH_MODE:-sandbox}
+      OUTREACH_SANDBOX_SMTP_HOST: mailpit
+      OUTREACH_SANDBOX_SMTP_PORT: 1025
+      OUTREACH_DAILY_LIMIT: ${OUTREACH_DAILY_LIMIT:-50}
+      OUTREACH_DAY_SECONDS: ${OUTREACH_DAY_SECONDS:-86400}
       AI_MODEL_AGENT: ${AI_MODEL_AGENT:-openai/gpt-oss-120b}
       AI_MODEL_BULK: ${AI_MODEL_BULK:-openai/gpt-oss-20b}
       AI_MODEL_SAFETY: ${AI_MODEL_SAFETY:-openai/gpt-oss-safeguard-20b}

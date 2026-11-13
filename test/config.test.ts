@@ -21,6 +21,7 @@ describe('parseConfig', () => {
       google: undefined,
       smtp: { host: 'localhost', port: 1025, secure: false, user: undefined, pass: undefined, from: 'TalentPilot <no-reply@talentpilot.local>' },
       search: { serperKey: undefined },
+      outreach: { mode: 'sandbox', sandboxHost: 'localhost', sandboxPort: 1025, dailyLimit: 50, daySeconds: 86_400 },
       aiLimits: { dailyTokens: undefined, weekBudget: undefined, monthBudget: undefined },
       // No key = mock mode; default models per role.
       ai: {

@@ -5,7 +5,7 @@ import { createApp } from './app.js';
 import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
-import { createMailer } from './email/mailer.js';
+import { createMailer, createOutreachMailer } from './email/mailer.js';
 import { ensureJobNumbers } from './jobs/service.js';
 import { createLogger } from './logger.js';
 import { createMemoryEvents, createRedisEvents, type TaskEvents } from './tasks/events.js';
@@ -60,7 +60,9 @@ async function start(): Promise<void> {
   } else {
     const memoryEvents = createMemoryEvents();
     events = memoryEvents;
-    const inline = createInlineQueue(() => buildProcessors({ ai, events: memoryEvents, search, queue: () => inline }));
+    const inline = createInlineQueue(() =>
+      buildProcessors({ ai, events: memoryEvents, search, queue: () => inline, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach }),
+    );
     queue = inline;
     logger.warn('No REDIS_URL: background tasks run inside the API process');
   }
@@ -70,6 +72,7 @@ async function start(): Promise<void> {
     queue,
     events,
     searchMode: search.mode,
+    outreach: config.outreach,
     aiLimits: config.aiLimits,
     corsOrigins: config.corsOrigins,
     logger,

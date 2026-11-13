@@ -24,8 +24,16 @@ export interface TaskMessage {
   [extra: string]: unknown;
 }
 
+export interface EnqueueOptions {
+  /** Run it later (e.g. the Day 3 follow-up email). */
+  delayMs?: number;
+  /** A unique key for this run; default: the task id. Needed when the same task is woken
+   *  up again later (BullMQ keeps only one job per key). */
+  key?: string;
+}
+
 export interface TaskQueue {
-  enqueue(type: string, message: TaskMessage): Promise<void>;
+  enqueue(type: string, message: TaskMessage, options?: EnqueueOptions): Promise<void>;
   /** True if the queue's backend (Redis) is reachable: shown in /health. */
   isReady(): boolean;
   close(): Promise<void>;
@@ -59,9 +67,10 @@ export function createBullQueue(redisUrl: string): TaskQueue {
   void queue.waitUntilReady().then(() => (ready = true)).catch(() => (ready = false));
   queue.on('error', () => (ready = false));
   return {
-    async enqueue(type, message) {
-      // jobId = our task id: if the same task were enqueued twice, BullMQ keeps only one.
-      await queue.add(type, message, { jobId: message.taskId });
+    async enqueue(type, message, options = {}) {
+      // jobId = our task id (or the given key): if the same run were enqueued twice, BullMQ
+      // keeps only one. `delay` = BullMQ waits that long before handing it to the worker.
+      await queue.add(type, message, { jobId: options.key ?? message.taskId, delay: Math.max(0, options.delayMs ?? 0) });
     },
     isReady: () => ready,
     close: () => queue.close(),
@@ -103,9 +112,11 @@ export function startWorker(redisUrl: string, processors: Record<string, Process
 export function createInlineQueue(processors: () => Record<string, Processor>): TaskQueue & { idle(): Promise<void> } {
   const running = new Set<Promise<void>>();
   return {
-    async enqueue(type, message) {
+    async enqueue(type, message, options = {}) {
+      // Same rule as BullMQ, so tests catch an id BullMQ would refuse.
+      if ((options.key ?? message.taskId).includes(':')) throw new Error('Custom Id cannot contain :');
       const run = (async () => {
-        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => (options.delayMs ? setTimeout(r, options.delayMs) : setImmediate(r)));
         const processor = processors()[type];
         if (!processor) return;
         for (let number = 1; number <= DEFAULT_JOB_OPTIONS.attempts; number++) {
