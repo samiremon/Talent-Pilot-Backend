@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { pino, type Logger } from 'pino';
 import { pinoHttp } from 'pino-http';
+import { errorHandler, notFoundHandler } from './errors.js';
 
 export interface AppOptions {
   corsOrigins: string[];
@@ -55,9 +56,8 @@ export function createApp({ corsOrigins, logger = pino({ level: 'silent' }) }: A
     });
   });
 
-  app.use((_req, res) => {
-    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Route not found' } });
-  });
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }

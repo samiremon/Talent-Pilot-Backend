@@ -23,5 +23,15 @@ function shutdown(signal: string): void {
   server.close(() => process.exit(0));
 }
 
+// Last-resort safety net: a bug escaped every handler. Log it and exit so Docker restarts us clean.
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'Unhandled promise rejection');
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception');
+  process.exit(1);
+});
+
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
