@@ -10,7 +10,9 @@
  */
 import { Types } from 'mongoose';
 import { AppError } from '../errors.js';
+import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js';
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
+import { startScoring, type SourcingDeps } from '../sourcing/routes.js';
 import { ActivityModel } from '../models/activity.js';
 import { PendingActionModel, type ActionType } from '../models/chat.js';
 
@@ -32,11 +34,15 @@ export function presentAction(action: {
   notes: string[];
   result?: unknown;
 }) {
+  // The CSV import card keeps every row on the server (to import on Confirm); the browser
+  // only needs the counts and preview, so the big list is left out.
+  const { people: _rows, ...payload } = (action.payload ?? {}) as Record<string, unknown>;
+  void _rows;
   return {
     id: String(action._id),
     type: action.type,
     status: action.status,
-    payload: action.payload,
+    payload,
     notes: action.notes,
     result: action.result ?? null,
   };
@@ -55,7 +61,13 @@ async function loadPending(actionId: string, userId: string) {
  * The recruiter pressed Confirm. `edits` are the fields as the recruiter left them on
  * the card (they may have changed the AI's suggestion before confirming).
  */
-export async function confirmAction(actionId: string, userId: string, edits?: Record<string, unknown>) {
+export async function confirmAction(
+  actionId: string,
+  userId: string,
+  edits?: Record<string, unknown>,
+  /** Needed for actions that start background work (e.g. scoring after a CSV import). */
+  deps?: SourcingDeps,
+) {
   const action = await loadPending(actionId, userId);
 
   // Claim it first (pending -> confirmed) so a double-click can't run it twice.
@@ -96,6 +108,16 @@ export async function confirmAction(actionId: string, userId: string, edits?: Re
         const payload = action.payload as { jobId: string };
         const deleted = await deleteJob(payload.jobId, { userId, actor: 'ai' });
         result = { title: deleted.title, jobCode: deleted.jobCode, deletedCandidates: deleted.deletedCandidates };
+        break;
+      }
+      case 'import_csv': {
+        // payload = { jobId, fileName, people: [...] } (the rows read when the file was attached).
+        // Same code path as the "Upload CSV" button: add (duplicates skipped) -> start scoring.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; people: NewCandidate[] };
+        const added = await addCandidates(payload.jobId, 'csv', payload.people, 'recruiter', userId);
+        const task = added.added > 0 ? await startScoring(deps, payload.jobId, userId) : null;
+        result = { jobId: payload.jobId, ...added, taskId: task?.id ?? null };
         break;
       }
       default:

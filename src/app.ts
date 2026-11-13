@@ -123,7 +123,7 @@ export function createApp({
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
-  app.use('/chat', requireAuth, chatRouter(ai));
+  app.use('/chat', requireAuth, chatRouter(ai, { queue, events }));
   app.use('/activity', requireAuth, activityRouter(ai, aiLimits));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.

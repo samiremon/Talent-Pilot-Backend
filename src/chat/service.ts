@@ -34,7 +34,7 @@ type StoredMessage = {
 };
 
 /** Messages as the browser sees them, with their card (if any) attached. */
-async function present(messages: StoredMessage[]) {
+export async function presentMessages(messages: StoredMessage[]) {
   const actionIds = messages.map((m) => m.actionId).filter(Boolean);
   const actions = await PendingActionModel.find({ _id: { $in: actionIds } }).lean();
   const byId = new Map(actions.map((a) => [String(a._id), presentAction(a)]));
@@ -50,7 +50,7 @@ async function present(messages: StoredMessage[]) {
 
 export async function listMessages(userId: string, limit = 100) {
   const rows = await ChatMessageModel.find({ userId }).sort({ createdAt: -1 }).limit(limit).lean();
-  return present(rows.reverse());
+  return presentMessages(rows.reverse());
 }
 
 /** A long old message becomes a short note (saves thousands of tokens per turn). */
@@ -124,7 +124,7 @@ export async function sendMessage(ai: Ai, userId: string, text: string, jobId?: 
     replies.push(await ChatMessageModel.create({ userId: user, role: 'assistant', text: '', jobId: jobObjectId, actionId }));
   }
 
-  return { messages: await present([userMessage.toObject(), ...replies.map((r) => r.toObject())]), usage: result.usage };
+  return { messages: await presentMessages([userMessage.toObject(), ...replies.map((r) => r.toObject())]), usage: result.usage };
 }
 
 /** After Confirm/Cancel, a short note in the chat so the conversation (and the AI) knows. */
@@ -135,6 +135,6 @@ export async function addSystemNote(userId: string, text: string, jobId?: string
     text,
     jobId: jobId ? new Types.ObjectId(jobId) : null,
   });
-  const [message] = await present([row.toObject()]);
+  const [message] = await presentMessages([row.toObject()]);
   return message;
 }

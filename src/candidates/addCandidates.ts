@@ -32,14 +32,12 @@ export interface AddResult {
 /** MongoDB's error code for "this would break a unique index". */
 const DUPLICATE_KEY = 11000;
 
-export async function addCandidates(
-  jobId: string | Types.ObjectId,
-  source: (typeof CANDIDATE_SOURCES)[number],
-  people: NewCandidate[],
-  actor: Actor = 'system',
-  /** The recruiter behind it (e.g. who uploaded the CSV), for the activity log. */
-  userId?: string | null,
-): Promise<AddResult> {
+/**
+ * Works out what an import WOULD do, without saving anything: which people are new,
+ * which are duplicates (of each other or of candidates already in the job) and which rows
+ * are unusable. Used by addCandidates() and by the chat's "Import CSV?" preview card.
+ */
+export async function planCandidates(jobId: string | Types.ObjectId, people: NewCandidate[]) {
   const jobObjectId = new Types.ObjectId(String(jobId));
   let invalid = 0;
   let duplicates = 0;
@@ -49,7 +47,7 @@ export async function addCandidates(
   const seenEmails = new Set(existing.map((c) => c.email).filter(Boolean));
   const seenUrls = new Set(existing.map((c) => c.profileUrl).filter(Boolean));
 
-  const rows = [];
+  const fresh: (NewCandidate & { name: string; email: string | null; profileUrl: string | null })[] = [];
   for (const person of people) {
     const name = person.name?.trim();
     const email = normalizeEmail(person.email);
@@ -66,18 +64,34 @@ export async function addCandidates(
     }
     if (email) seenEmails.add(email);
     if (profileUrl) seenUrls.add(profileUrl);
-
-    rows.push({
-      jobId: jobObjectId,
-      source,
-      name,
-      email,
-      profileUrl,
-      headline: person.headline?.trim() || null,
-      location: person.location?.trim() || null,
-      profileText: person.profileText?.trim() || null,
-    });
+    fresh.push({ ...person, name, email, profileUrl });
   }
+  return { fresh, duplicates, invalid };
+}
+
+export async function addCandidates(
+  jobId: string | Types.ObjectId,
+  source: (typeof CANDIDATE_SOURCES)[number],
+  people: NewCandidate[],
+  actor: Actor = 'system',
+  /** The recruiter behind it (e.g. who uploaded the CSV), for the activity log. */
+  userId?: string | null,
+): Promise<AddResult> {
+  const jobObjectId = new Types.ObjectId(String(jobId));
+  const plan = await planCandidates(jobObjectId, people);
+  const invalid = plan.invalid;
+  let duplicates = plan.duplicates;
+
+  const rows = plan.fresh.map((person) => ({
+    jobId: jobObjectId,
+    source,
+    name: person.name,
+    email: person.email,
+    profileUrl: person.profileUrl,
+    headline: person.headline?.trim() || null,
+    location: person.location?.trim() || null,
+    profileText: person.profileText?.trim() || null,
+  }));
 
   let added = 0;
   if (rows.length > 0) {

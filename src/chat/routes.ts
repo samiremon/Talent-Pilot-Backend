@@ -5,13 +5,17 @@
  *   POST /chat/messages                    { text, jobId? } -> the AI's answer (+ any cards)
  *   POST /chat/actions/:id/confirm         { fields? } -> do what the card proposed
  *   POST /chat/actions/:id/cancel          -> drop it
+ *   POST /chat/attachments/csv             (form: file, jobId) -> an "Import CSV?" card
  */
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import type { Ai } from '../ai/client.js';
 import { AppError, asyncHandler } from '../errors.js';
+import multer from 'multer';
+import type { SourcingDeps } from '../sourcing/routes.js';
 import { cancelAction, confirmAction } from './actions.js';
+import { attachCsv } from './attachments.js';
 import { addSystemNote, listMessages, sendMessage } from './service.js';
 
 const sendBody = z.object({
@@ -20,7 +24,7 @@ const sendBody = z.object({
 });
 const confirmBody = z.object({ fields: z.record(z.string(), z.unknown()).optional() });
 
-export function chatRouter(ai: Ai): Router {
+export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
   const router = Router();
 
   // Each message can trigger several AI calls; keep the free quota (and costs) safe.
@@ -55,17 +59,44 @@ export function chatRouter(ai: Ai): Router {
     '/actions/:id/confirm',
     asyncHandler(async (req, res) => {
       const { fields } = confirmBody.parse(req.body ?? {});
-      const card = await confirmAction(req.params.id as string, req.user!.id, fields);
+      const card = await confirmAction(req.params.id as string, req.user!.id, fields, deps);
       const result = card.result as { jobId?: string; title?: string; jobCode?: string; deletedCandidates?: number } | null;
       const name = result?.title ? `"${result.title}"${result.jobCode ? ` (${result.jobCode})` : ''}` : 'the job';
+      const imported = card.result as { added?: number; duplicates?: number; taskId?: string | null } | null;
       const text =
         card.type === 'create_job'
           ? `Done: the job ${name} was created.`
           : card.type === 'update_job'
             ? `Done: the job ${name} was updated.`
-            : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
+            : card.type === 'import_csv'
+              ? `Done: imported ${imported?.added ?? 0} candidate(s)${imported?.duplicates ? `, skipped ${imported.duplicates} duplicate(s)` : ''}.${imported?.taskId ? ' AI scoring has started: you can follow it on the card above or on the job page.' : ''}`
+              : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
       const note = await addSystemNote(req.user!.id, text, card.type === 'delete_job' ? null : result?.jobId);
       res.json({ card, message: note });
+    }),
+  );
+
+  // Files stay in memory, max 2 MB. The CSV is read and previewed; nothing is imported until
+  // the recruiter presses Confirm on the card.
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 1 } });
+  router.post(
+    '/attachments/csv',
+    chatLimiter,
+    (req, res, next) =>
+      upload.single('file')(req, res, (err: unknown) =>
+        err
+          ? next(
+              new AppError(400, 'UPLOAD_FAILED', (err as { code?: string }).code === 'LIMIT_FILE_SIZE' ? 'The file is too big (max 2 MB).' : 'The upload failed.'),
+            )
+          : next(),
+      ),
+    asyncHandler(async (req, res) => {
+      if (!req.file) throw new AppError(400, 'NO_FILE', 'Attach a CSV file.');
+      if (!/\.csv$/i.test(req.file.originalname)) throw new AppError(400, 'NOT_A_CSV', 'Please attach a .csv file.');
+      const jobId = typeof req.body?.jobId === 'string' ? req.body.jobId : '';
+      if (!jobId) throw new AppError(400, 'NO_JOB', 'Which job is this CSV for? Pick a job first.');
+      const messages = await attachCsv(req.user!.id, jobId, req.file.originalname, req.file.buffer.toString('utf8'));
+      res.json({ messages });
     }),
   );
 

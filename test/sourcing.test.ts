@@ -222,3 +222,60 @@ describe('when the AI skips people', () => {
     expect(await CandidateModel.countDocuments({ jobId: job._id, score: null, scoreReason: null })).toBe(1);
   });
 });
+
+describe('attaching a CSV in the chat', () => {
+  it('previews first (nothing saved), then imports and scores only on Confirm', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+
+    const res = await agent
+      .post('/chat/attachments/csv')
+      .field('jobId', job.jobCode)
+      .attach('file', Buffer.from(SAMPLE_CSV), 'candidates.csv')
+      .expect(200);
+    const [mine, reply] = res.body.messages;
+    expect(mine).toMatchObject({ role: 'user', text: '📎 Attached candidates.csv (13 rows) for JOB-0001' });
+    expect(reply.card).toMatchObject({
+      type: 'import_csv',
+      status: 'pending',
+      payload: { fileName: 'candidates.csv', rows: 13, fresh: 10, duplicates: 2, invalid: 1, withoutText: 1 },
+    });
+    expect(reply.card.payload.people).toBeUndefined(); // the full row list stays on the server
+    expect(reply.card.payload.preview[0]).toMatchObject({ name: 'Sara Ahmed' });
+    expect(reply.text).toMatch(/Please verify the details in the card below/);
+    expect(await CandidateModel.countDocuments()).toBe(0); // nothing imported yet
+
+    const confirmed = await agent.post(`/chat/actions/${reply.card.id}/confirm`).send({}).expect(200);
+    expect(confirmed.body.card.result).toMatchObject({ added: 10, duplicates: 2, invalid: 1 });
+    expect(confirmed.body.message.text).toMatch(/^Done: imported 10 candidate\(s\), skipped 2 duplicate\(s\)\. AI scoring has started/);
+    await queue.idle();
+    expect(await CandidateModel.countDocuments({ jobId: job.id, score: { $ne: null } })).toBe(9);
+  });
+
+  it('says so (and shows no card) when the file has nobody new', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    await agent.post(`/jobs/${job.id}/candidates/csv`).attach('file', Buffer.from(SAMPLE_CSV), 'c.csv').expect(201);
+    await queue.idle();
+    const res = await agent.post('/chat/attachments/csv').field('jobId', job.id).attach('file', Buffer.from(SAMPLE_CSV), 'c.csv').expect(200);
+    expect(res.body.messages[1].card).toBeNull();
+    expect(res.body.messages[1].text).toMatch(/nobody new/);
+  });
+
+  it('needs a job and a .csv file, and nobody else can confirm your import', async () => {
+    const { app } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    expect((await agent.post('/chat/attachments/csv').attach('file', Buffer.from(SAMPLE_CSV), 'c.csv').expect(400)).body.error.code).toBe('NO_JOB');
+    expect((await agent.post('/chat/attachments/csv').field('jobId', job.id).attach('file', Buffer.from('x'), 'cv.pdf').expect(400)).body.error.code).toBe('NOT_A_CSV');
+
+    const res = await agent.post('/chat/attachments/csv').field('jobId', job.id).attach('file', Buffer.from(SAMPLE_CSV), 'c.csv').expect(200);
+    await ensureRecruiter({ email: 'omar@example.com', password: 'another-long-password', name: 'Omar' }, 'create-if-missing');
+    const omar = request.agent(app);
+    await omar.post('/auth/login').send({ email: 'omar@example.com', password: 'another-long-password' }).expect(200);
+    await omar.post(`/chat/actions/${res.body.messages[1].card.id}/confirm`).send({}).expect(404);
+    expect(await CandidateModel.countDocuments()).toBe(0);
+  });
+});
