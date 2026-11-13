@@ -7,6 +7,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { retryAfterMs } from '../src/ai/client.js';
 import { groundInText } from '../src/ai/extractJob.js';
 import { ensureRecruiter } from '../src/auth/recruiter.js';
 import { AiUsageModel } from '../src/models/aiUsage.js';
@@ -117,5 +118,16 @@ describe('token meter', () => {
     const overview = await agent.get('/stats/overview').expect(200);
     expect(overview.body.aiTokens).toEqual({ inputTokens, outputTokens });
     expect(await AiUsageModel.countDocuments({ jobId: created.body.job.id })).toBe(1);
+  });
+});
+
+describe('Groq rate limits', () => {
+  it('reads how long Groq asks us to wait', () => {
+    const groq429 = (text: string) => Object.assign(new Error(text), { status: 429 });
+    expect(retryAfterMs(groq429('Rate limit reached ... Please try again in 15.495s. Need more tokens?'))).toBe(15_495);
+    expect(retryAfterMs(groq429('Please try again in 750ms.'))).toBe(750);
+    expect(retryAfterMs(groq429('Please try again in 1m2.5s.'))).toBe(62_500);
+    expect(retryAfterMs(groq429('Too many requests'))).toBe(5000); // no hint: a sensible default
+    expect(retryAfterMs(Object.assign(new Error('Bad request'), { status: 400 }))).toBeNull();
   });
 });

@@ -10,7 +10,7 @@ describe('GET /health', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.service).toBe('talent-pilot-backend');
-    expect(res.body.checks).toEqual({ database: 'up' });
+    expect(res.body.checks).toEqual({ database: 'up', queue: 'up' });
   });
 
   it('returns 503 when the database is down', async () => {
@@ -18,7 +18,7 @@ describe('GET /health', () => {
     const res = await request(down).get('/health');
     expect(res.status).toBe(503);
     expect(res.body.status).toBe('degraded');
-    expect(res.body.checks).toEqual({ database: 'down' });
+    expect(res.body.checks).toEqual({ database: 'down', queue: 'up' });
   });
 
   it('sets security headers and hides Express', async () => {

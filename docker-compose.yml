@@ -31,7 +31,8 @@ services:
     image: talentpilot-api:local
     restart: unless-stopped
     init: true
-    environment:
+    # The same settings are reused by the worker below (&backend-env / *backend-env).
+    environment: &backend-env
       NODE_ENV: production
       PORT: 4000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
@@ -84,6 +85,31 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Background worker: runs the slow jobs (AI scoring, web search, sending email) from the
+  # BullMQ queue. Same image and settings as the API, different start command, no web port.
+  worker:
+    image: talentpilot-api:local
+    restart: unless-stopped
+    init: true
+    command: ["node", "dist/worker.js"]
+    environment: *backend-env
+    depends_on:
+      api:
+        condition: service_started # the api service builds the shared image
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # The image's health check calls the API's /health; the worker has no web server.
+    healthcheck:
+      disable: true
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
   mongo:
     image: mongo:7.0
     restart: unless-stopped
@@ -109,6 +135,9 @@ services:
   redis:
     image: redis:7.4-alpine
     restart: unless-stopped
+    # Published on 127.0.0.1 only, so `npm run dev` + `npm run worker` on this machine can reach it.
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}

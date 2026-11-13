@@ -62,13 +62,41 @@ export interface Ai {
   checkLimits(): Promise<void>;
 }
 
+/**
+ * For a Groq "rate limit" (429) error: how long Groq asks us to wait, in ms.
+ * Reads "Please try again in 15.495s" / "in 750ms" / "in 1m2.5s" from the message.
+ * Returns null if this isn't a rate-limit error.
+ */
+export function retryAfterMs(err: unknown): number | null {
+  const status = (err as { status?: number }).status ?? (err as { response?: { status?: number } }).response?.status;
+  const text = err instanceof Error ? err.message : String(err);
+  if (status !== 429 && !/rate limit reached/i.test(text)) return null;
+  const match = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i.exec(text);
+  if (!match) return 5000;
+  let ms = 0;
+  for (const [, num, unit] of match[1]!.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+    const n = Number(num);
+    ms += unit === 'h' ? n * 3_600_000 : unit === 'm' ? n * 60_000 : unit === 's' ? n * 1000 : n;
+  }
+  return Math.round(ms);
+}
+
 /** Roughly how many tokens a text is (≈4 characters per token). Only used in mock mode. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Turns Groq failures into clear messages for the recruiter. */
+/**
+ * Turns Groq failures into clear messages for the recruiter. The original error is kept as
+ * `cause` (standard JavaScript), so logs can show the real reason without users seeing it.
+ */
 function toAppError(err: unknown): AppError {
+  const friendly = toFriendlyError(err);
+  (friendly as { cause?: unknown }).cause = err;
+  return friendly;
+}
+
+function toFriendlyError(err: unknown): AppError {
   const status = (err as { status?: number; response?: { status?: number } }).status ??
     (err as { response?: { status?: number } }).response?.status;
   if (status === 429) {
@@ -93,9 +121,9 @@ export function createAi(settings: AiSettings): Ai {
         apiKey: settings.apiKey,
         model: settings.models[role],
         temperature: 0, // same input -> (nearly) same answer; we want reliability, not creativity
-        // On "too many requests" (free tier) or a network blip, wait and retry up to 4 times,
-        // waiting longer each time, before giving up.
-        maxRetries: 4,
+        // Network blips / server errors: retried quickly by the SDK. Rate limits (429) are
+        // handled in structured() below, waiting as long as Groq asks.
+        maxRetries: 2,
         // Passes requests through unchanged, but notes Groq's rate-limit headers (see rateLimits.ts).
         fetch: rateLimitFetch(),
       });
@@ -115,21 +143,42 @@ export function createAi(settings: AiSettings): Ai {
       data = schema.parse(mock());
       usage = { inputTokens: estimateTokens(system + user), outputTokens: estimateTokens(JSON.stringify(data)) };
     } else {
-      try {
-        // jsonSchema = Groq must answer in exactly this JSON shape (tested: works with gpt-oss).
-        // includeRaw = also give us the raw reply, which carries the token counts.
-        const runnable = model.withStructuredOutput(schema, { method: 'jsonSchema', includeRaw: true });
-        const result = await runnable.invoke([
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ]);
-        // Double-check the shape ourselves before trusting it.
-        data = schema.parse(result.parsed);
-        const meta = (result.raw as { usage_metadata?: { input_tokens?: number; output_tokens?: number } })
-          .usage_metadata;
-        usage = { inputTokens: meta?.input_tokens ?? 0, outputTokens: meta?.output_tokens ?? 0 };
-      } catch (err) {
-        throw toAppError(err);
+      // Two Groq free-tier hiccups are handled right here, before giving up:
+      //   - "json_validate_failed": the model's answer broke Groq's strict JSON check. We ask
+      //     again once using Groq's other structured mode (function calling). Our own schema
+      //     check below still applies, so nothing unchecked gets through.
+      //   - 429 rate limit: Groq says how long to wait ("try again in 15.5s"). We wait exactly
+      //     that (max 60 s) and try again, up to 3 times.
+      let method: 'jsonSchema' | 'functionCalling' = 'jsonSchema';
+      let rateLimitWaits = 0;
+      for (;;) {
+        try {
+          // includeRaw = also give us the raw reply, which carries the token counts.
+          const runnable = model.withStructuredOutput(schema, { method, includeRaw: true });
+          const result = await runnable.invoke([
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ]);
+          // Double-check the shape ourselves before trusting it.
+          data = schema.parse(result.parsed);
+          const meta = (result.raw as { usage_metadata?: { input_tokens?: number; output_tokens?: number } })
+            .usage_metadata;
+          usage = { inputTokens: meta?.input_tokens ?? 0, outputTokens: meta?.output_tokens ?? 0 };
+          break;
+        } catch (err) {
+          const text = err instanceof Error ? err.message : String(err);
+          if (method === 'jsonSchema' && text.includes('json_validate_failed')) {
+            method = 'functionCalling';
+            continue;
+          }
+          const wait = retryAfterMs(err);
+          if (wait !== null && rateLimitWaits < 3) {
+            rateLimitWaits++;
+            await new Promise((r) => setTimeout(r, Math.min(wait + 500, 60_000)));
+            continue;
+          }
+          throw toAppError(err);
+        }
       }
     }
 

@@ -18,6 +18,9 @@ import { requireAuth } from './auth/requireAuth.js';
 import { chatRouter } from './chat/routes.js';
 import { authRouter, type AuthOptions } from './auth/routes.js';
 import { jobsRouter, statsRouter } from './jobs/routes.js';
+import { sourcingRouter } from './sourcing/routes.js';
+import { createMemoryEvents, type TaskEvents } from './tasks/events.js';
+import { createInlineQueue, type TaskQueue } from './tasks/queue.js';
 import { isDatabaseReady } from './db.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 
@@ -33,6 +36,9 @@ export interface AppOptions {
   trustProxy?: number;
   /** The AI client. Defaults to mock mode (no key), which is what tests use. */
   ai?: Ai;
+  /** The background-job queue + live progress events. Tests default to in-process ones. */
+  queue?: TaskQueue;
+  events?: TaskEvents;
   /** Optional token limits/budgets for the token dashboard (see config.ts). */
   aiLimits?: { dailyTokens?: number; weekBudget?: number; monthBudget?: number };
 }
@@ -50,6 +56,8 @@ export function createApp({
   trustProxy = 0,
   ai = createAi({ models: MOCK_AI_MODELS }),
   aiLimits = {},
+  events = createMemoryEvents(),
+  queue = createInlineQueue(() => ({})),
 }: AppOptions): Express {
   const app = express();
 
@@ -97,11 +105,12 @@ export function createApp({
   // 200 when everything works, 503 when a dependency is down (Docker marks the container unhealthy).
   app.get('/health', (_req, res) => {
     const database = databaseReady() ? 'up' : 'down';
-    const healthy = database === 'up';
+    const queueState = queue.isReady() ? 'up' : 'down';
+    const healthy = database === 'up' && queueState === 'up';
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'ok' : 'degraded',
       service: 'talent-pilot-backend',
-      checks: { database },
+      checks: { database, queue: queueState },
       uptimeSeconds: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
     });
@@ -109,6 +118,8 @@ export function createApp({
 
   app.use('/auth', authRouter(auth));
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
+  // Sourcing first (CSV upload, scoring, live events), then the rest of /jobs.
+  app.use('/jobs', requireAuth, sourcingRouter({ queue, events }));
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));

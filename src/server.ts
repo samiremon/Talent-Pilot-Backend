@@ -7,6 +7,9 @@ import { connectDatabase, disconnectDatabase } from './db.js';
 import { createMailer } from './email/mailer.js';
 import { ensureJobNumbers } from './jobs/service.js';
 import { createLogger } from './logger.js';
+import { createMemoryEvents, createRedisEvents, type TaskEvents } from './tasks/events.js';
+import { buildProcessors } from './tasks/processors.js';
+import { createBullQueue, createInlineQueue, type TaskQueue } from './tasks/queue.js';
 
 let config: Config;
 try {
@@ -19,6 +22,8 @@ try {
 
 const logger = createLogger({ level: config.logLevel, pretty: config.nodeEnv === 'development' });
 let server: Server | undefined;
+let queue: TaskQueue | undefined;
+let events: TaskEvents | undefined;
 
 async function start(): Promise<void> {
   // Don't accept traffic until the database is reachable.
@@ -43,8 +48,23 @@ async function start(): Promise<void> {
     ai.mode === 'groq' ? 'AI: using Groq' : 'AI: mock mode (no GROQ_API_KEY set)',
   );
 
+  // Background tasks: with Redis, the BullMQ queue + the separate worker process do the
+  // work. Without Redis (quick local try), the API runs tasks itself, in the background.
+  if (config.redisUrl) {
+    queue = createBullQueue(config.redisUrl);
+    events = createRedisEvents(config.redisUrl);
+    logger.info('Background tasks: BullMQ queue on Redis (run the worker to process them)');
+  } else {
+    const memoryEvents = createMemoryEvents();
+    events = memoryEvents;
+    queue = createInlineQueue(() => buildProcessors({ ai, events: memoryEvents }));
+    logger.warn('No REDIS_URL: background tasks run inside the API process');
+  }
+
   const app = createApp({
     ai,
+    queue,
+    events,
     aiLimits: config.aiLimits,
     corsOrigins: config.corsOrigins,
     logger,
@@ -82,6 +102,8 @@ async function shutdown(signal: string): Promise<void> {
 
   // Stop taking new requests, let in-flight ones finish, then close the database.
   await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  await queue?.close();
+  await events?.close();
   await disconnectDatabase();
   logger.info('Shutdown complete');
   process.exit(0);

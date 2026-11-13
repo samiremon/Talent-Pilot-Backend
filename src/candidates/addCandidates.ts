@@ -37,6 +37,8 @@ export async function addCandidates(
   source: (typeof CANDIDATE_SOURCES)[number],
   people: NewCandidate[],
   actor: Actor = 'system',
+  /** The recruiter behind it (e.g. who uploaded the CSV), for the activity log. */
+  userId?: string | null,
 ): Promise<AddResult> {
   const jobObjectId = new Types.ObjectId(String(jobId));
   let invalid = 0;
@@ -98,6 +100,7 @@ export async function addCandidates(
       jobId: jobObjectId,
       type: 'candidates_added',
       actor,
+      userId: userId ? new Types.ObjectId(userId) : null,
       message: `Added ${added} candidate${added === 1 ? '' : 's'} from ${source === 'csv' ? 'CSV upload' : source === 'web' ? 'web search' : 'manual entry'}${duplicates ? ` (${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped)` : ''}`,
     });
   }

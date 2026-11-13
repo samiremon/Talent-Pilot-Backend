@@ -39,6 +39,9 @@ const envSchema = z.object({
     .string({ error: 'is required (see .env.example)' })
     .regex(/^mongodb(\+srv)?:\/\//, 'must start with mongodb:// or mongodb+srv://'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  // Redis, for the background-job queue (BullMQ). Docker sets this itself. Empty = no
+  // Redis: background tasks then run inside the API process (fine for a quick local try).
+  REDIS_URL: optional(z.string().regex(/^rediss?:\/\//, 'must start with redis:// or rediss://')),
 
   // --- Login ---
   // How many hours a login lasts before the recruiter must log in again.
@@ -104,6 +107,8 @@ export type Config = {
   corsOrigins: string[];
   logLevel: LogLevel;
   mongodbUri: string;
+  /** undefined = run background tasks inside the API process. */
+  redisUrl?: string;
   sessionTtlHours: number;
   cookieSecure: boolean;
   trustProxy: number;
@@ -157,6 +162,7 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     corsOrigins: e.CORS_ORIGINS,
     logLevel: e.LOG_LEVEL,
     mongodbUri: e.MONGODB_URI,
+    redisUrl: e.REDIS_URL,
     sessionTtlHours: e.SESSION_TTL_HOURS,
     cookieSecure: e.COOKIE_SECURE ?? e.NODE_ENV === 'production',
     trustProxy: e.TRUST_PROXY,
