@@ -66,3 +66,7 @@ The server refuses to start if a setting is invalid or MongoDB can't be reached.
   The database keeps only a SHA-256 hash of that token, and logout deletes it at once.
 - Login attempts are limited to 10 failures per IP per 15 minutes.
 - Endpoints: `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`.
+- **Demo button:** with `DEMO_LOGIN_ENABLED=true` (the default in `.env.example`), the login page
+  shows a "Use demo account" button that fills in the recruiter's email and password from `.env`,
+  served by `GET /auth/demo`. Anyone who can open the site can then log in, so set it to
+  `false` for real use; the endpoint then returns 404 and the button disappears.

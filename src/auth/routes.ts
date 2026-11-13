@@ -20,6 +20,11 @@ export interface AuthOptions {
   sessionTtlHours: number;
   /** Max login attempts per IP address per 15 minutes. */
   loginAttemptsPerWindow?: number;
+  /**
+   * DEMO ONLY: when set, GET /auth/demo returns these credentials so the login page can
+   * offer a "Use demo account" button. Leave undefined to switch the endpoint off (404).
+   */
+  demoCredentials?: { email: string; password: string };
 }
 
 // What a login request must look like. Anything else gets a 400 VALIDATION_ERROR.
@@ -34,7 +39,12 @@ const loginBody = z.object({
 // can't discover which emails have accounts by timing the response.
 const dummyHashPromise = hashPassword('not-a-real-password');
 
-export function authRouter({ cookieSecure, sessionTtlHours, loginAttemptsPerWindow = 10 }: AuthOptions): Router {
+export function authRouter({
+  cookieSecure,
+  sessionTtlHours,
+  loginAttemptsPerWindow = 10,
+  demoCredentials,
+}: AuthOptions): Router {
   const router = Router();
 
   // Cookie settings, explained:
@@ -91,6 +101,17 @@ export function authRouter({ cookieSecure, sessionTtlHours, loginAttemptsPerWind
   // requireAuth does all the work; if we get here the user is logged in.
   router.get('/me', requireAuth, (req, res) => {
     res.json({ user: req.user });
+  });
+
+  // GET /auth/demo: the demo account for the login page's "Use demo account" button.
+  // When demo login is switched off we answer 404, exactly as if the route didn't exist,
+  // and the login page simply doesn't show the button.
+  router.get('/demo', (_req, res, next) => {
+    if (!demoCredentials) {
+      next(AppError.notFound('Route not found'));
+      return;
+    }
+    res.json(demoCredentials);
   });
 
   return router;

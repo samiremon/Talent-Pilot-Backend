@@ -54,6 +54,10 @@ const envSchema = z.object({
   SEED_RECRUITER_EMAIL: optional(z.email('must be a valid email')),
   SEED_RECRUITER_PASSWORD: optional(z.string().min(8, 'must be at least 8 characters')),
   SEED_RECRUITER_NAME: z.string().trim().min(1).default('Recruiter'),
+  // DEMO ONLY: lets the login page show a "Use demo account" button that fills in the
+  // recruiter email and password above. Anyone who can open the site can then log in,
+  // so keep this off for anything real.
+  DEMO_LOGIN_ENABLED: optional(booleanText),
 });
 
 /** The checked settings, in the shape the rest of the code uses. */
@@ -68,6 +72,8 @@ export type Config = {
   trustProxy: number;
   /** Present only when both the email and the password are set. */
   seedRecruiter?: { email: string; password: string; name: string };
+  /** Show the "Use demo account" button (only possible when seedRecruiter is set). */
+  demoLoginEnabled: boolean;
 };
 
 /**
@@ -101,6 +107,8 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     sessionTtlHours: e.SESSION_TTL_HOURS,
     cookieSecure: e.COOKIE_SECURE ?? e.NODE_ENV === 'production',
     trustProxy: e.TRUST_PROXY,
+    // The button needs credentials to fill in, so it's off when no seed account is set.
+    demoLoginEnabled: (e.DEMO_LOGIN_ENABLED ?? false) && Boolean(e.SEED_RECRUITER_EMAIL && e.SEED_RECRUITER_PASSWORD),
     seedRecruiter:
       e.SEED_RECRUITER_EMAIL && e.SEED_RECRUITER_PASSWORD
         ? { email: e.SEED_RECRUITER_EMAIL, password: e.SEED_RECRUITER_PASSWORD, name: e.SEED_RECRUITER_NAME }

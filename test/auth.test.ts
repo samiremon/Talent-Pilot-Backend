@@ -128,6 +128,20 @@ describe('login flow', () => {
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('hands out the demo account only when demo login is on', async () => {
+    const off = await request(makeApp()).get('/auth/demo');
+    expect(off.status).toBe(404);
+
+    const app = createApp({
+      corsOrigins: ['http://localhost:5173'],
+      auth: { cookieSecure: false, sessionTtlHours: 12, demoCredentials: { email: RECRUITER.email, password: RECRUITER.password } },
+    });
+    const on = await request(app).get('/auth/demo');
+    expect(on.body).toEqual({ email: RECRUITER.email, password: RECRUITER.password });
+    // ...and those credentials really work.
+    expect((await request(app).post('/auth/login').send(on.body)).status).toBe(200);
+  });
+
   it('blocks password guessing after too many failed attempts', async () => {
     const app = makeApp(3);
     for (let i = 0; i < 3; i++) {

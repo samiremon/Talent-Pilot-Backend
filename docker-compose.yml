@@ -43,6 +43,8 @@ services:
       SEED_RECRUITER_EMAIL: ${SEED_RECRUITER_EMAIL:?Set SEED_RECRUITER_EMAIL in .env}
       SEED_RECRUITER_PASSWORD: ${SEED_RECRUITER_PASSWORD:?Set SEED_RECRUITER_PASSWORD in .env}
       SEED_RECRUITER_NAME: ${SEED_RECRUITER_NAME:-Recruiter}
+      # DEMO ONLY: "Use demo account" button on the login page (off unless .env says true).
+      DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       # The demo runs on plain http://localhost, so the cookie can't require HTTPS.
       # Set to true when you put this behind HTTPS.

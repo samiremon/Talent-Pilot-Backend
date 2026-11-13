@@ -34,7 +34,15 @@ async function start(): Promise<void> {
     corsOrigins: config.corsOrigins,
     logger,
     trustProxy: config.trustProxy,
-    auth: { cookieSecure: config.cookieSecure, sessionTtlHours: config.sessionTtlHours },
+    auth: {
+      cookieSecure: config.cookieSecure,
+      sessionTtlHours: config.sessionTtlHours,
+      // Only hand out the demo account when DEMO_LOGIN_ENABLED=true.
+      demoCredentials:
+        config.demoLoginEnabled && config.seedRecruiter
+          ? { email: config.seedRecruiter.email, password: config.seedRecruiter.password }
+          : undefined,
+    },
   });
   server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv }, `TalentPilot API listening on http://localhost:${config.port}`);

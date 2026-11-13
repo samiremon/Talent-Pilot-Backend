@@ -15,6 +15,7 @@ describe('parseConfig', () => {
       cookieSecure: false,
       trustProxy: 0,
       seedRecruiter: undefined,
+      demoLoginEnabled: false,
     });
   });
 
@@ -59,6 +60,13 @@ describe('parseConfig', () => {
     const config = parseConfig({ MONGODB_URI, SEED_RECRUITER_EMAIL: 'r@example.com', SEED_RECRUITER_PASSWORD: 'long-enough' });
     expect(config.seedRecruiter).toEqual({ email: 'r@example.com', password: 'long-enough', name: 'Recruiter' });
     expect(() => parseConfig({ MONGODB_URI, SEED_RECRUITER_EMAIL: 'r@example.com' })).toThrow(/set both or neither/);
+  });
+
+  it('enables demo login only when asked and a seed account exists', () => {
+    const seed = { SEED_RECRUITER_EMAIL: 'r@example.com', SEED_RECRUITER_PASSWORD: 'long-enough' };
+    expect(parseConfig({ MONGODB_URI, ...seed }).demoLoginEnabled).toBe(false);
+    expect(parseConfig({ MONGODB_URI, ...seed, DEMO_LOGIN_ENABLED: 'true' }).demoLoginEnabled).toBe(true);
+    expect(parseConfig({ MONGODB_URI, DEMO_LOGIN_ENABLED: 'true' }).demoLoginEnabled).toBe(false);
   });
 
   it('rejects a short recruiter password', () => {
