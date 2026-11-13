@@ -20,6 +20,8 @@ export interface TaskMessage {
   taskId: string;
   jobId: string;
   userId?: string | null;
+  // Task-specific settings, e.g. the search query for "source_candidates".
+  [extra: string]: unknown;
 }
 
 export interface TaskQueue {

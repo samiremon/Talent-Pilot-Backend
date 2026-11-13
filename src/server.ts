@@ -1,5 +1,6 @@
 import type { Server } from 'node:http';
 import { createAi } from './ai/client.js';
+import { createSearchClient } from './sourcing/search.js';
 import { createApp } from './app.js';
 import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
@@ -43,6 +44,8 @@ async function start(): Promise<void> {
   }
 
   const ai = createAi(config.ai);
+  const search = createSearchClient(config.search.serperKey);
+  logger.info({ mode: search.mode }, search.mode === 'serper' ? 'Web search: Serper' : 'Web search: sample mode (no SERPER_API_KEY set)');
   logger.info(
     { mode: ai.mode, models: ai.mode === 'groq' ? ai.models : undefined },
     ai.mode === 'groq' ? 'AI: using Groq' : 'AI: mock mode (no GROQ_API_KEY set)',
@@ -57,7 +60,8 @@ async function start(): Promise<void> {
   } else {
     const memoryEvents = createMemoryEvents();
     events = memoryEvents;
-    queue = createInlineQueue(() => buildProcessors({ ai, events: memoryEvents }));
+    const inline = createInlineQueue(() => buildProcessors({ ai, events: memoryEvents, search, queue: () => inline }));
+    queue = inline;
     logger.warn('No REDIS_URL: background tasks run inside the API process');
   }
 
@@ -65,6 +69,7 @@ async function start(): Promise<void> {
     ai,
     queue,
     events,
+    searchMode: search.mode,
     aiLimits: config.aiLimits,
     corsOrigins: config.corsOrigins,
     logger,

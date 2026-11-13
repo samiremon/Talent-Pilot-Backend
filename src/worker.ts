@@ -11,12 +11,13 @@
  * the browser live.
  */
 import { createAi } from './ai/client.js';
+import { createSearchClient } from './sourcing/search.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
 import { createLogger } from './logger.js';
 import { createRedisEvents } from './tasks/events.js';
 import { buildProcessors } from './tasks/processors.js';
-import { startWorker } from './tasks/queue.js';
+import { createBullQueue, startWorker } from './tasks/queue.js';
 
 let config: Config;
 try {
@@ -36,8 +37,11 @@ if (!config.redisUrl) {
 await connectDatabase(config.mongodbUri, logger);
 const ai = createAi(config.ai);
 const events = createRedisEvents(config.redisUrl);
-const worker = startWorker(config.redisUrl, buildProcessors({ ai, events }), logger);
-logger.info({ ai: ai.mode }, 'Worker ready, waiting for tasks');
+const search = createSearchClient(config.search.serperKey);
+// The worker also ADDS tasks (a finished web search queues scoring), so it needs the queue too.
+const queue = createBullQueue(config.redisUrl);
+const worker = startWorker(config.redisUrl, buildProcessors({ ai, events, search, queue: () => queue }), logger);
+logger.info({ ai: ai.mode, search: search.mode }, 'Worker ready, waiting for tasks');
 
 // Graceful stop: finish the task in progress (BullMQ waits for it), then close everything.
 let stopping = false;
@@ -48,6 +52,7 @@ async function shutdown(signal: string) {
   setTimeout(() => process.exit(1), 30_000).unref(); // never hang forever
   await worker.close();
   await events.close();
+  await queue.close();
   await disconnectDatabase();
   process.exit(0);
 }

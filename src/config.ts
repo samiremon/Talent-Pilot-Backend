@@ -82,6 +82,8 @@ const envSchema = z.object({
   // --- AI ---
   // Groq API key (free at https://console.groq.com/keys). Empty = "mock mode":
   // the app still works end to end with built-in sample answers, no key needed.
+  // Serper (Google search API) for finding candidates on the web. Blank = sample mode.
+  SERPER_API_KEY: optional(z.string().trim().min(20, 'looks too short (copy it from serper.dev)')),
   GROQ_API_KEY: optional(z.string().trim().startsWith('gsk_', 'must start with gsk_ (copy it from console.groq.com/keys)')),
   // Which model does which job. Change these to try other Groq models.
   AI_MODEL_AGENT: z.string().trim().min(1).default('openai/gpt-oss-120b'), // chat, reading JDs, writing emails
@@ -123,6 +125,8 @@ export type Config = {
   smtp: { host: string; port: number; secure: boolean; user?: string; pass?: string; from: string };
   /** AI settings. `apiKey` undefined = mock mode. */
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
+  /** Web search for candidates. `serperKey` undefined = sample mode. */
+  search: { serperKey?: string };
   /** Optional limits shown on the token dashboard. */
   aiLimits: { dailyTokens?: number; weekBudget?: number; monthBudget?: number };
 };
@@ -183,6 +187,7 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
       from: e.EMAIL_FROM,
     },
     aiLimits: { dailyTokens: e.AI_DAILY_TOKEN_LIMIT, weekBudget: e.AI_TOKEN_BUDGET_WEEK, monthBudget: e.AI_TOKEN_BUDGET_MONTH },
+    search: { serperKey: e.SERPER_API_KEY },
     ai: {
       apiKey: e.GROQ_API_KEY,
       models: { agent: e.AI_MODEL_AGENT, bulk: e.AI_MODEL_BULK, safety: e.AI_MODEL_SAFETY },

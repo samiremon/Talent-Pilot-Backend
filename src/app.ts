@@ -39,6 +39,8 @@ export interface AppOptions {
   /** The background-job queue + live progress events. Tests default to in-process ones. */
   queue?: TaskQueue;
   events?: TaskEvents;
+  /** Web search mode, shown in the Find candidates dialog. Default: sample. */
+  searchMode?: 'serper' | 'sample';
   /** Optional token limits/budgets for the token dashboard (see config.ts). */
   aiLimits?: { dailyTokens?: number; weekBudget?: number; monthBudget?: number };
 }
@@ -58,6 +60,7 @@ export function createApp({
   aiLimits = {},
   events = createMemoryEvents(),
   queue = createInlineQueue(() => ({})),
+  searchMode = 'sample',
 }: AppOptions): Express {
   const app = express();
 
@@ -119,11 +122,11 @@ export function createApp({
   app.use('/auth', authRouter(auth));
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
   // Sourcing first (CSV upload, scoring, live events), then the rest of /jobs.
-  app.use('/jobs', requireAuth, sourcingRouter({ queue, events }));
+  app.use('/jobs', requireAuth, sourcingRouter({ queue, events, searchMode }));
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
-  app.use('/chat', requireAuth, chatRouter(ai, { queue, events }));
+  app.use('/chat', requireAuth, chatRouter(ai, { queue, events, searchMode }));
   app.use('/activity', requireAuth, activityRouter(ai, aiLimits));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.

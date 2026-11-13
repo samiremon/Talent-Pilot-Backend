@@ -14,10 +14,13 @@
  */
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
+import { z } from 'zod';
 import { AppError, asyncHandler } from '../errors.js';
 import { resolveJob } from '../jobs/service.js';
 import { listTasks } from '../tasks/service.js';
 import { manualCandidateInput, addManualCandidate } from './manual.js';
+import { buildSearchQuery, MAX_PAGES, RESULTS_PER_PAGE } from './search.js';
+import { startSourcing } from './webSourcing.js';
 import { importCsv, startScoring as startScoringFn, type SourcingDeps } from './service.js';
 
 export type { SourcingDeps } from './service.js';
@@ -32,6 +35,11 @@ const upload = multer({
     if (ok) done(null, true);
     else done(new AppError(400, 'NOT_A_CSV', 'Please upload a .csv file.'));
   },
+});
+
+const sourceBody = z.object({
+  query: z.string().trim().min(3).max(300).optional(),
+  pages: z.coerce.number().int().min(1).max(MAX_PAGES).default(1),
 });
 
 export function sourcingRouter(deps: SourcingDeps): Router {
@@ -62,6 +70,35 @@ export function sourcingRouter(deps: SourcingDeps): Router {
       const job = await resolveJob(req.params.id as string);
       const input = manualCandidateInput.parse(req.body);
       res.status(201).json(await addManualCandidate(deps, String(job._id), input, req.user!.id));
+    }),
+  );
+
+  // "Find candidates on the web": the suggested Google query for this job (no AI used),
+  // so the recruiter can check/edit it before searching.
+  router.get(
+    '/:id/source',
+    asyncHandler(async (req, res) => {
+      const job = await resolveJob(req.params.id as string);
+      res.json({
+        query: buildSearchQuery(job),
+        mode: deps.searchMode ?? 'sample',
+        maxPages: MAX_PAGES,
+        resultsPerPage: RESULTS_PER_PAGE,
+      });
+    }),
+  );
+
+  // Start the web search (background task with live progress; scoring follows by itself).
+  router.post(
+    '/:id/source',
+    asyncHandler(async (req, res) => {
+      const job = await resolveJob(req.params.id as string);
+      const body = sourceBody.parse(req.body);
+      const task = await startSourcing(deps, String(job._id), req.user!.id, {
+        query: body.query ?? buildSearchQuery(job),
+        pages: body.pages,
+      });
+      res.status(202).json({ task });
     }),
   );
 

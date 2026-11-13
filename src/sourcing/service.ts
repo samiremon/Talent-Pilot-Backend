@@ -14,6 +14,8 @@ import { parseCandidatesCsv } from './csv.js';
 export interface SourcingDeps {
   queue: TaskQueue;
   events: TaskEvents;
+  /** 'serper' = real web search, 'sample' = made-up sample profiles (no SERPER_API_KEY). */
+  searchMode?: 'serper' | 'sample';
 }
 
 /**
