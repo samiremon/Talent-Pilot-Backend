@@ -17,6 +17,8 @@ export interface EmailMessage {
   /** Plain-text version (always included: some inboxes and screen readers prefer it). */
   text: string;
   html?: string;
+  /** Extra email headers, e.g. List-Unsubscribe (the "Unsubscribe" button in Gmail). */
+  headers?: Record<string, string>;
 }
 
 export interface Mailer {

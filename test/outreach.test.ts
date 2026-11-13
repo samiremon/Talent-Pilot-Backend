@@ -46,7 +46,7 @@ async function setup(settings: { dailyLimit?: number; daySeconds?: number } = {}
     { jobId: job.id, source: 'csv', name: 'Cy Sourced', email: 'cy@example.com', status: 'sourced' },
     { jobId: job.id, source: 'csv', name: 'Di Accepted', email: 'di@example.com', status: 'accepted' },
   ]);
-  return { agent, job, queue, mailer, ana: ana!, bo: bo!, cy: cy!, di: di! };
+  return { app, agent, job, queue, mailer, ana: ana!, bo: bo!, cy: cy!, di: di! };
 }
 
 describe('outreach campaigns', () => {
@@ -80,7 +80,10 @@ describe('outreach campaigns', () => {
 
     expect(mailer.sent).toHaveLength(6); // 2 people x 3 steps, each exactly once
     expect(mailer.sent.filter((m) => m.to === 'ana@example.com').map((m) => m.subject)[0]).toBe('Edited subject');
-    expect(mailer.sent[0]!.text).toMatch(/reply "unsubscribe"/);
+    // No unsubscribe text in the email: a real Unsubscribe button via the standard headers.
+    expect(mailer.sent[0]!.text).not.toMatch(/unsubscribe/i);
+    expect(mailer.sent[0]!.headers?.['List-Unsubscribe']).toMatch(/^<http:\/\/localhost:8080\/api\/unsubscribe\/[A-Za-z0-9_-]{30,}>$/);
+    expect(mailer.sent[0]!.headers?.['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
     expect((await CandidateModel.findById(ana._id).lean())?.status).toBe('contacted');
     campaign = (await agent.get(`/jobs/${job.id}/campaigns`).expect(200)).body.campaigns[0];
     expect(campaign.status).toBe('done');
@@ -175,5 +178,31 @@ describe('outreach campaigns', () => {
     expect(after.status).toBe('draft'); // back to waiting for approval
     expect(after.messages.every((m: { status: string }) => m.status === 'draft')).toBe(true);
   });
+
+  it('unsubscribe link: opening it changes nothing; the button (or one-click) unsubscribes and stops the follow-ups', async () => {
+    const { app, agent, job, queue, mailer, ana } = await setup({ daySeconds: 0.5 });
+    await agent.post(`/jobs/${job.id}/campaigns`).send({ sequence: 'sequence', candidateIds: [String(ana._id)] }).expect(201);
+    await queue.idle();
+    const campaign = (await agent.get(`/jobs/${job.id}/campaigns`).expect(200)).body.campaigns[0];
+    await agent.post(`/jobs/${job.id}/campaigns/${campaign.id}/approve`).send({}).expect(200);
+    const contacted = async () => (await CandidateModel.findById(ana._id).lean())?.status === 'contacted';
+    for (let i = 0; i < 80 && !(await contacted()); i++) await sleep(25);
+    const link = mailer.sent[0]!.headers!['List-Unsubscribe']!.slice(1, -1);
+    const path = new URL(link).pathname.replace(/^\/api/, ''); // the app is mounted without /api in tests
+
+    // A mail scanner opening the link: nothing happens.
+    const page = await request(app).get(path).expect(200);
+    expect(page.text).toMatch(/Stop receiving emails about the React Developer role at Acme\?/);
+    expect((await CandidateModel.findById(ana._id).lean())?.status).toBe('contacted');
+
+    // The one-click POST (what Gmail's Unsubscribe button sends).
+    const done = await request(app).post(path).type('form').send('List-Unsubscribe=One-Click').expect(200);
+    expect(done.text).toMatch(/You're unsubscribed/);
+    expect((await CandidateModel.findById(ana._id).lean())?.status).toBe('unsubscribed');
+    await sleep(4000);
+    await queue.idle();
+    expect(mailer.sent).toHaveLength(1); // no follow-ups after unsubscribing
+    await request(app).get('/unsubscribe/not-a-real-token-at-all-xxxx').expect(404);
+  }, 15_000);
 });
 

@@ -137,7 +137,7 @@ export type Config = {
   /** AI settings. `apiKey` undefined = mock mode. */
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
   /** Outreach emails: where they go, how many a day, how long a "day" is. */
-  outreach: { mode: 'sandbox' | 'live'; sandboxHost: string; sandboxPort: number; dailyLimit: number; daySeconds: number };
+  outreach: { mode: 'sandbox' | 'live'; sandboxHost: string; sandboxPort: number; dailyLimit: number; daySeconds: number; appUrl: string };
   /** Web search for candidates. `serperKey` undefined = sample mode. */
   search: { serperKey?: string };
   /** Optional limits shown on the token dashboard. */
@@ -207,6 +207,8 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
       sandboxPort: e.OUTREACH_SANDBOX_SMTP_PORT,
       dailyLimit: e.OUTREACH_DAILY_LIMIT,
       daySeconds: e.OUTREACH_DAY_SECONDS,
+      // For the unsubscribe link in each email.
+      appUrl: e.APP_URL.replace(/\/$/, ''),
     },
     ai: {
       apiKey: e.GROQ_API_KEY,

@@ -20,6 +20,7 @@ import { authRouter, type AuthOptions } from './auth/routes.js';
 import { jobsRouter, statsRouter } from './jobs/routes.js';
 import { sourcingRouter } from './sourcing/routes.js';
 import { outreachRouter } from './outreach/routes.js';
+import { unsubscribeRouter } from './outreach/unsubscribe.js';
 import type { OutreachSettings } from './outreach/sending.js';
 import { createMemoryEvents, type TaskEvents } from './tasks/events.js';
 import { createInlineQueue, type TaskQueue } from './tasks/queue.js';
@@ -125,6 +126,9 @@ export function createApp({
   });
 
   app.use('/auth', authRouter(auth));
+  // Public: candidates' unsubscribe links (no login; the link's random token is the key).
+  // The one-click POST from mail apps sends a form body, so urlencoded bodies are read here.
+  app.use('/unsubscribe', express.urlencoded({ extended: false, limit: '2kb' }), unsubscribeRouter());
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
   // Sourcing first (CSV upload, scoring, live events), then the rest of /jobs.
   app.use('/jobs', requireAuth, sourcingRouter({ queue, events, searchMode }));

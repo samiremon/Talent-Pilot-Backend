@@ -58,6 +58,8 @@ const messageSchema = new Schema(
     error: { type: String, default: null },
     // Why it was skipped, e.g. "Ana replied".
     note: { type: String, default: null },
+    // Secret for this email's unsubscribe link (random, so nobody can guess someone else's).
+    unsubscribeToken: { type: String, default: null, index: true },
   },
   { timestamps: true },
 );

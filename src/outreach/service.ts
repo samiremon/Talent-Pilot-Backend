@@ -201,9 +201,17 @@ export async function listCampaigns(deps: OutreachDeps, jobRef: string) {
   const tasks = new Map(
     (await TaskModel.find({ _id: { $in: campaigns.flatMap((c) => [c.draftTaskId, c.sendTaskId]).filter(Boolean) } }).lean()).map((t) => [String(t._id), presentTask(t)]),
   );
-  const eligible = (await eligibleCandidates(job._id)).length;
+  const eligibleList = await eligibleCandidates(job._id);
   return {
-    settings: { mode: deps.outreach.mode, dailyLimit: deps.outreach.dailyLimit, daySeconds: deps.outreach.daySeconds, sentLast24h: await sentLast24h(), eligible },
+    settings: {
+      mode: deps.outreach.mode,
+      dailyLimit: deps.outreach.dailyLimit,
+      daySeconds: deps.outreach.daySeconds,
+      sentLast24h: await sentLast24h(),
+      eligible: eligibleList.length,
+    },
+    // Who can be added to a new campaign (Accepted, with an email, not in a running one).
+    eligible: eligibleList.map((c) => ({ id: String(c._id), name: c.name, email: c.email, score: c.score ?? null })),
     campaigns: campaigns.map((c) => ({
       id: String(c._id),
       name: c.name,

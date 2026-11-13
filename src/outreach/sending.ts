@@ -14,8 +14,13 @@
  *
  * Then it sends (sandbox = Mailpit, live = real SMTP), marks it sent, and after the FIRST
  * email moves the candidate Accepted -> Contacted (through the normal status rules, so it
- * shows in the activity log). Every email ends with an unsubscribe line.
+ * shows in the activity log).
+ *
+ * Unsubscribe: every email carries the standard List-Unsubscribe headers (RFC 2369 / 8058),
+ * which mail apps like Gmail show as an "Unsubscribe" button. The link is personal (a random
+ * token per email) and leads to /unsubscribe/:token (see outreach/unsubscribe.ts).
  */
+import { randomBytes } from 'node:crypto';
 import { changeCandidateStatus } from '../candidates/statusChange.js';
 import type { Mailer } from '../email/mailer.js';
 import { ActivityModel } from '../models/activity.js';
@@ -30,12 +35,22 @@ export interface OutreachSettings {
   mode: 'sandbox' | 'live';
   dailyLimit: number;
   daySeconds: number;
+  /** Where people open the app (for the unsubscribe link), e.g. http://localhost:8080. */
+  appUrl?: string;
 }
 
 /** Statuses that may still receive outreach. */
 const EMAILABLE: readonly CandidateStatus[] = ['accepted', 'contacted'];
 
-export const UNSUBSCRIBE_FOOTER = '\n\n--\nNot interested? Just reply "unsubscribe" and we won\'t email you again.';
+/** The headers that make mail apps show an "Unsubscribe" button for this email. */
+export function unsubscribeHeaders(appUrl: string, token: string): Record<string, string> {
+  const link = `${appUrl.replace(/\/$/, '')}/api/unsubscribe/${token}`;
+  return {
+    'List-Unsubscribe': `<${link}>`,
+    // One-click: the mail app may POST to the link directly (no page to click through).
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -94,7 +109,14 @@ export function sendOutreachProcessor({
       const claimed = await OutreachMessageModel.findOneAndUpdate({ _id: m._id, status: 'approved' }, { $set: { status: 'sending' } }, { new: true });
       if (!claimed) continue;
       try {
-        await mailer.send({ to: claimed.to, subject: claimed.subject, text: `${claimed.body}${UNSUBSCRIBE_FOOTER}` });
+        const token = randomBytes(24).toString('base64url');
+        await OutreachMessageModel.updateOne({ _id: claimed._id }, { $set: { unsubscribeToken: token } });
+        await mailer.send({
+          to: claimed.to,
+          subject: claimed.subject,
+          text: claimed.body,
+          headers: unsubscribeHeaders(settings.appUrl ?? 'http://localhost:8080', token),
+        });
         await OutreachMessageModel.updateOne({ _id: claimed._id }, { $set: { status: 'sent', sentAt: new Date(), error: null } });
         sent++;
         await ActivityModel.create({
