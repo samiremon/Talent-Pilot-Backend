@@ -17,7 +17,8 @@ import multer from 'multer';
 import { z } from 'zod';
 import { AppError, asyncHandler } from '../errors.js';
 import { resolveJob } from '../jobs/service.js';
-import { listTasks } from '../tasks/service.js';
+import { ALL_JOBS } from '../tasks/events.js';
+import { listActiveTasks, listTasks } from '../tasks/service.js';
 import { manualCandidateInput, addManualCandidate } from './manual.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from './search.js';
 import { startSourcing } from './webSourcing.js';
@@ -123,7 +124,34 @@ export function sourcingRouter(deps: SourcingDeps): Router {
     }),
   );
 
-  // Live updates. The browser opens this once (EventSource) and keeps it open.
+  /**
+   * THE app's live stream: task updates for ALL jobs over ONE connection. The browser opens
+   * it once and every progress bar and chat card shares it. (Browsers allow only ~6 open
+   * connections per site over HTTP/1.1; one stream per card used them all up and froze the
+   * whole page.) Defined before "/:id/..." so "events" isn't read as a job id.
+   */
+  router.get(
+    '/events',
+    asyncHandler(async (req: Request, res: Response) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no', // tell nginx not to hold the stream back
+      });
+      const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      // Start with what's running right now, so progress shows straight away.
+      for (const task of await listActiveTasks()) send('task', task);
+      const stop = deps.events.subscribe(ALL_JOBS, (event) => send('task', event.task));
+      const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 25_000);
+      req.on('close', () => {
+        clearInterval(heartbeat);
+        stop();
+      });
+    }),
+  );
+
+  // Live updates for ONE job (kept for API users; the app uses /jobs/events above).
   router.get(
     '/:id/events',
     asyncHandler(async (req: Request, res: Response) => {

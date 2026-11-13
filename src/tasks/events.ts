@@ -16,12 +16,15 @@ export interface TaskEvent {
 
 export interface TaskEvents {
   publish(event: TaskEvent): Promise<void>;
-  /** Calls `listener` for every event of this job; returns a function that stops listening. */
+  /** Calls `listener` for every event of this job (or of ALL jobs with ALL_JOBS); returns a
+   *  function that stops listening. */
   subscribe(jobId: string, listener: (event: TaskEvent) => void): () => void;
   close(): Promise<void>;
 }
 
 const CHANNEL = 'talentpilot:task-events';
+/** Subscribe to this "job id" to get the events of every job (the app's single live stream). */
+export const ALL_JOBS = '*';
 
 /** One process only (tests, or no Redis). */
 export function createMemoryEvents(): TaskEvents {
@@ -30,6 +33,7 @@ export function createMemoryEvents(): TaskEvents {
   return {
     async publish(event) {
       emitter.emit(event.jobId, event);
+      emitter.emit(ALL_JOBS, event);
     },
     subscribe(jobId, listener) {
       emitter.on(jobId, listener);

@@ -83,6 +83,12 @@ export async function updateTask(
   return presented;
 }
 
+/** Tasks still queued or running, in all jobs (sent first on the app's live stream). */
+export async function listActiveTasks() {
+  const rows = await TaskModel.find({ status: { $in: ['queued', 'running'] } }).sort({ createdAt: 1 }).limit(50).lean();
+  return rows.map(presentTask);
+}
+
 export async function listTasks(jobId: string, limit = 10) {
   const rows = await TaskModel.find({ jobId: new Types.ObjectId(jobId) }).sort({ createdAt: -1 }).limit(limit).lean();
   return rows.map(presentTask);
