@@ -1,5 +1,6 @@
 import type { Server } from 'node:http';
 import { createApp } from './app.js';
+import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
 import { createLogger } from './logger.js';
@@ -20,7 +21,21 @@ async function start(): Promise<void> {
   // Don't accept traffic until the database is reachable.
   await connectDatabase(config.mongodbUri, logger);
 
-  const app = createApp({ corsOrigins: config.corsOrigins, logger });
+  // A brand-new database gets the recruiter account from .env automatically,
+  // so whoever runs the project can log in straight away.
+  if (config.seedRecruiter) {
+    const result = await ensureRecruiter(config.seedRecruiter, 'create-if-missing');
+    if (result === 'created') logger.info({ email: config.seedRecruiter.email }, 'Recruiter account created');
+  } else {
+    logger.warn('No SEED_RECRUITER_EMAIL / SEED_RECRUITER_PASSWORD set: nobody will be able to log in');
+  }
+
+  const app = createApp({
+    corsOrigins: config.corsOrigins,
+    logger,
+    trustProxy: config.trustProxy,
+    auth: { cookieSecure: config.cookieSecure, sessionTtlHours: config.sessionTtlHours },
+  });
   server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv }, `TalentPilot API listening on http://localhost:${config.port}`);
   });

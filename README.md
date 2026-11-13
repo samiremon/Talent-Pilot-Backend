@@ -25,6 +25,9 @@ docker compose up --build
 | API | <http://localhost:4000/health> (also via the website at `/api`) |
 | Email inbox (Mailpit) | <http://localhost:8025> |
 
+**Log in** with the recruiter account from your `.env`
+(default `recruiter@example.com` / `change-me-recruiter`). It's created automatically on first start.
+
 Stop with `docker compose down`. Add `-v` to also delete the database data.
 
 **Built-in safety:** containers run as non-root users with read-only file systems and
@@ -53,3 +56,13 @@ The server refuses to start if a setting is invalid or MongoDB can't be reached.
 | `npm start` | Run the compiled server |
 | `npm run typecheck` | Check types |
 | `npm test` | Run tests |
+| `npm run seed` | Create the recruiter account, or reset its password to the one in `.env` |
+
+## Login, in short
+
+- One recruiter account, created from `SEED_RECRUITER_*` in `.env` on first start.
+- Passwords are stored as **scrypt hashes**, never in plain text.
+- Logging in sets an `HttpOnly`, `SameSite=Strict` cookie holding a random session token.
+  The database keeps only a SHA-256 hash of that token, and logout deletes it at once.
+- Login attempts are limited to 10 failures per IP per 15 minutes.
+- Endpoints: `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`.

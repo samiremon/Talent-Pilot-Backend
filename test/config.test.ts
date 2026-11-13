@@ -11,6 +11,10 @@ describe('parseConfig', () => {
       corsOrigins: ['http://localhost:5173'],
       logLevel: 'info',
       mongodbUri: MONGODB_URI,
+      sessionTtlHours: 12,
+      cookieSecure: false,
+      trustProxy: 0,
+      seedRecruiter: undefined,
     });
   });
 
@@ -44,6 +48,23 @@ describe('parseConfig', () => {
 
   it('rejects a MONGODB_URI that is not a MongoDB URL', () => {
     expect(() => parseConfig({ MONGODB_URI: 'postgres://x' })).toThrow(/MONGODB_URI/);
+  });
+
+  it('turns on secure cookies in production unless told otherwise', () => {
+    expect(parseConfig({ MONGODB_URI, NODE_ENV: 'production' }).cookieSecure).toBe(true);
+    expect(parseConfig({ MONGODB_URI, NODE_ENV: 'production', COOKIE_SECURE: 'false' }).cookieSecure).toBe(false);
+  });
+
+  it('builds the recruiter seed only when both email and password are set', () => {
+    const config = parseConfig({ MONGODB_URI, SEED_RECRUITER_EMAIL: 'r@example.com', SEED_RECRUITER_PASSWORD: 'long-enough' });
+    expect(config.seedRecruiter).toEqual({ email: 'r@example.com', password: 'long-enough', name: 'Recruiter' });
+    expect(() => parseConfig({ MONGODB_URI, SEED_RECRUITER_EMAIL: 'r@example.com' })).toThrow(/set both or neither/);
+  });
+
+  it('rejects a short recruiter password', () => {
+    expect(() => parseConfig({ MONGODB_URI, SEED_RECRUITER_EMAIL: 'r@example.com', SEED_RECRUITER_PASSWORD: 'short' })).toThrow(
+      /SEED_RECRUITER_PASSWORD/,
+    );
   });
 
   it('lists every problem at once', () => {

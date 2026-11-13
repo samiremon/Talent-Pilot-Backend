@@ -39,6 +39,16 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
+      # Login. The recruiter account is created on first start.
+      SEED_RECRUITER_EMAIL: ${SEED_RECRUITER_EMAIL:?Set SEED_RECRUITER_EMAIL in .env}
+      SEED_RECRUITER_PASSWORD: ${SEED_RECRUITER_PASSWORD:?Set SEED_RECRUITER_PASSWORD in .env}
+      SEED_RECRUITER_NAME: ${SEED_RECRUITER_NAME:-Recruiter}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      # The demo runs on plain http://localhost, so the cookie can't require HTTPS.
+      # Set to true when you put this behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # nginx (the web container) sits in front of the API: trust its forwarded IP.
+      TRUST_PROXY: 1
     ports:
       - "${API_PORT:-4000}:4000"
     depends_on:

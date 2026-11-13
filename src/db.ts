@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import type { Logger } from 'pino';
 
 /** True only while Mongoose has a live connection. */
+// Set while we close the connection ourselves, so that isn't reported as a problem.
+let closingOnPurpose = false;
+
 export function isDatabaseReady(): boolean {
   return mongoose.connection.readyState === mongoose.ConnectionStates.connected;
 }
@@ -15,7 +18,9 @@ export async function connectDatabase(uri: string, logger: Logger): Promise<void
   mongoose.set('strictQuery', true);
 
   const { connection } = mongoose;
-  connection.on('disconnected', () => logger.warn('MongoDB disconnected'));
+  connection.on('disconnected', () => {
+    if (!closingOnPurpose) logger.warn('MongoDB disconnected');
+  });
   connection.on('reconnected', () => logger.info('MongoDB reconnected'));
   connection.on('error', (err) => logger.error({ err }, 'MongoDB error'));
 
@@ -24,5 +29,6 @@ export async function connectDatabase(uri: string, logger: Logger): Promise<void
 }
 
 export async function disconnectDatabase(): Promise<void> {
+  closingOnPurpose = true;
   await mongoose.disconnect();
 }

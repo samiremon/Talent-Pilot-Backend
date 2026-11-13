@@ -1,9 +1,17 @@
+/**
+ * The Express app: every request passes through the steps below, top to bottom.
+ *
+ * Kept separate from server.ts (which starts listening and connects to the database)
+ * so tests can create an app and send it fake requests without opening a real port.
+ */
 import { randomUUID } from 'node:crypto';
 import express, { type Express } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { pino, type Logger } from 'pino';
 import { pinoHttp } from 'pino-http';
+import { authRouter, type AuthOptions } from './auth/routes.js';
 import { isDatabaseReady } from './db.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 
@@ -13,6 +21,10 @@ export interface AppOptions {
   logger?: Logger;
   /** Reports whether MongoDB is connected. Defaults to the real Mongoose connection. */
   isDatabaseReady?: () => boolean;
+  /** Login settings (cookie security, session length, rate limit). */
+  auth?: AuthOptions;
+  /** Number of proxies in front of us (nginx in Docker = 1); see TRUST_PROXY in config.ts. */
+  trustProxy?: number;
 }
 
 /** Accept a caller's request id only if it looks safe; otherwise make a new one. */
@@ -22,10 +34,17 @@ export function createApp({
   corsOrigins,
   logger = pino({ level: 'silent' }),
   isDatabaseReady: databaseReady = isDatabaseReady,
+  auth = { cookieSecure: false, sessionTtlHours: 12 },
+  trustProxy = 0,
 }: AppOptions): Express {
   const app = express();
 
+  // Don't advertise that we run Express (one less hint for attackers).
   app.disable('x-powered-by');
+  // Behind nginx, trust its X-Forwarded-For header so req.ip is the visitor's real IP.
+  app.set('trust proxy', trustProxy);
+
+  // 1. Logging: give each request an id and log one line when it finishes.
   app.use(
     pinoHttp({
       logger,
@@ -50,10 +69,17 @@ export function createApp({
       },
     }),
   );
-  app.use(helmet());
-  app.use(cors({ origin: corsOrigins, exposedHeaders: ['X-Request-Id'] }));
-  app.use(express.json({ limit: '100kb' }));
 
+  // 2. Security headers (helmet) and which websites may call us from a browser (CORS).
+  //    `credentials: true` lets the allowed sites send the login cookie.
+  app.use(helmet());
+  app.use(cors({ origin: corsOrigins, credentials: true, exposedHeaders: ['X-Request-Id'] }));
+
+  // 3. Read request bodies (JSON, max 100kb) and cookies.
+  app.use(express.json({ limit: '100kb' }));
+  app.use(cookieParser());
+
+  // 4. Routes.
   // 200 when everything works, 503 when a dependency is down (Docker marks the container unhealthy).
   app.get('/health', (_req, res) => {
     const database = databaseReady() ? 'up' : 'down';
@@ -67,6 +93,9 @@ export function createApp({
     });
   });
 
+  app.use('/auth', authRouter(auth));
+
+  // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.
   app.use(notFoundHandler);
   app.use(errorHandler);
 
