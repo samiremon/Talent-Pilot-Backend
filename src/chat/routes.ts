@@ -84,6 +84,11 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'update_candidate'
+              ? (() => {
+                  const r = card.result as { name?: string; changed?: string[] } | null;
+                  return r?.changed?.length ? `Done: updated ${r.name}'s ${r.changed.join(' and ')}.` : `Nothing changed: ${r?.name ?? 'the candidate'} already had these details.`;
+                })()
             : card.type === 'delete_all_candidates'
               ? `Done: removed all ${(card.result as { deleted?: number } | null)?.deleted ?? 0} candidate(s) from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}. The job itself is still there.`
             : card.type === 'score_candidates'

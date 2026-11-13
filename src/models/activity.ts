@@ -24,6 +24,7 @@ export const ACTIVITY_TYPES = [
   'candidates_added',
   'candidate_scored',
   'candidate_deleted',
+  'candidate_updated',
   'status_changed',
   'status_undone',
   'email_sent',

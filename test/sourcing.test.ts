@@ -407,6 +407,49 @@ describe('ranking', () => {
   });
 });
 
+describe('editing a candidate\'s email and profile link', () => {
+  async function setupJob() {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    const web = await CandidateModel.create({ jobId: job.id, source: 'web', name: 'Web Person', profileUrl: 'https://www.linkedin.com/in/web-person' });
+    await CandidateModel.create({ jobId: job.id, source: 'csv', name: 'Other', email: 'taken@example.com' });
+    return { agent, job, web, queue };
+  }
+
+  it('adds an email (the Edit button), with the same checks as an import', async () => {
+    const { agent, job, web } = await setupJob();
+    const res = await agent.patch(`/jobs/${job.id}/candidates/${web._id}`).send({ email: ' New.Mail@Example.com ' }).expect(200);
+    expect(res.body).toMatchObject({ candidate: { email: 'new.mail@example.com', profileUrl: 'https://www.linkedin.com/in/web-person' }, changed: ['email'] });
+    const activity = (await agent.get(`/jobs/${job.id}/activity`).expect(200)).body;
+    expect(JSON.stringify(activity)).toMatch(/Updated Web Person's email/);
+
+    await agent.patch(`/jobs/${job.id}/candidates/${web._id}`).send({ email: 'not-an-email' }).expect(400);
+    const dup = await agent.patch(`/jobs/${job.id}/candidates/${web._id}`).send({ email: 'taken@example.com' }).expect(409);
+    expect(dup.body.error.message).toBe('Other in this job already has this email.');
+    // Can't remove both: at least an email or a link stays.
+    const both = await agent.patch(`/jobs/${job.id}/candidates/${web._id}`).send({ email: '', profileUrl: '' }).expect(400);
+    expect(both.body.error.code).toBe('CANDIDATE_INVALID');
+    // Changing the link (scheme added, cleaned like on import).
+    const link = await agent.patch(`/jobs/${job.id}/candidates/${web._id}`).send({ profileUrl: 'github.com/webperson' }).expect(200);
+    expect(link.body.candidate.profileUrl).toMatch(/^https:\/\/github\.com\/webperson/);
+  });
+
+  it('works from the AI card, with the recruiter\'s typo fix', async () => {
+    const { agent, job, web } = await setupJob();
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { proposeAction } = await import('../src/chat/actions.js');
+    const card = await proposeAction(String(user!._id), 'update_candidate', {
+      jobId: job.id, jobCode: job.jobCode, title: job.title, candidateId: String(web._id), name: 'Web Person',
+      before: { email: null, profileUrl: web.profileUrl }, changes: { email: 'web@gmai.com' },
+    });
+    expect((await CandidateModel.findById(web._id).lean())?.email).toBeNull(); // nothing until Confirm
+    const res = await agent.post(`/chat/actions/${card._id}/confirm`).send({ fields: { email: 'web@gmail.com' } }).expect(200);
+    expect(res.body.message.text).toBe("Done: updated Web Person's email.");
+    expect((await CandidateModel.findById(web._id).lean())?.email).toBe('web@gmail.com');
+  });
+});
+
 describe('removing a candidate', () => {
   const PERSON = { name: 'Delete Me', email: 'delete.me@example.com', profileText: 'React and TypeScript, 3 years.' };
 

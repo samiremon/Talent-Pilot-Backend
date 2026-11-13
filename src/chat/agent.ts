@@ -47,7 +47,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For ANY question about candidates' emails (who has one, who doesn't), use list_candidate_emails.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -438,6 +438,55 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             location: z.string().optional(),
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
+        }),
+      },
+    ),
+    tool(
+      async ({ name, job, email, profileUrl }) => {
+        if (email === undefined && profileUrl === undefined) return 'Ask the recruiter for the new email or profile link.';
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job this candidate is in (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const query = name.trim();
+        if (query.length < 2) return "Ask the recruiter for the candidate's name.";
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // An exact name match wins; otherwise "name contains".
+        let matches = await CandidateModel.find({ jobId: found._id, name: new RegExp(`^${escaped}$`, 'i') }).limit(MAX_MATCHES).lean();
+        if (matches.length === 0) matches = await CandidateModel.find({ jobId: found._id, name: new RegExp(escaped, 'i') }).limit(MAX_MATCHES).lean();
+        if (matches.length === 0) return `No candidate named "${clean(query, 60)}" in ${code}.`;
+        if (matches.length > 1) {
+          return `Several candidates in ${code} match "${clean(query, 60)}": ${matches.map((m) => clean(m.name, 60)).join('; ')}. Ask the recruiter which one (use the full name).`;
+        }
+        const c = matches[0]!;
+        const changes = { ...(email !== undefined ? { email } : {}), ...(profileUrl !== undefined ? { profileUrl } : {}) };
+        const fix = suggestEmailFix(email);
+        const notes = fix ? [`The email domain "${email!.split('@')[1]}" looks like a typo of ${fix}. Please check it.`] : [];
+        const action = await proposeAction(
+          userId,
+          'update_candidate',
+          { jobId: String(found._id), jobCode: code, title: found.title, candidateId: String(c._id), name: c.name, before: { email: c.email ?? null, profileUrl: c.profileUrl ?? null }, changes },
+          notes,
+        );
+        actionIds.push(String(action._id));
+        const what = Object.keys(changes).map((k) => (k === 'email' ? 'email' : 'profile link')).join(' and ');
+        cardIntros.push(`Here's a card to update ${clean(c.name, 60)}'s ${what} in ${code}.${fix ? ` Note: the email domain looks like a typo of ${fix}; you can fix it on the card.` : ''}`);
+        return `An "Edit contact" card for ${clean(c.name, 60)} (${what}) is now shown with Confirm/Cancel. Nothing changes until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_candidate_contact_edit',
+        description:
+          "Propose adding or changing ONE candidate's email and/or profile link (LinkedIn, GitHub, ...). Shows the recruiter a card (old -> new) to confirm. Use the values exactly as the recruiter wrote them.",
+        schema: z.object({
+          name: z.string().describe("The candidate's name as the recruiter said it"),
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          email: z.string().optional().describe('The new email exactly as written (do not correct it)'),
+          profileUrl: z.string().optional().describe('The new profile link exactly as written'),
         }),
       },
     ),

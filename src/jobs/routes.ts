@@ -13,6 +13,7 @@
  */
 import { Router } from 'express';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
+import { updateCandidateContact } from '../candidates/updateCandidate.js';
 import { asyncHandler } from '../errors.js';
 import {
   createJob,
@@ -79,6 +80,14 @@ export function jobsRouter(): Router {
       const result = await deleteAllCandidates(req.params.id as string, { userId: req.user!.id });
       req.log.info(result, 'All candidates removed');
       res.json(result);
+    }),
+  );
+
+  // Change a candidate's email / profile link (the Edit button). Same function as the AI's card.
+  router.patch(
+    '/:id/candidates/:candidateId',
+    asyncHandler(async (req, res) => {
+      res.json(await updateCandidateContact(req.params.id as string, req.params.candidateId as string, req.body, { userId: req.user!.id }));
     }),
   );
 

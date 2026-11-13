@@ -14,6 +14,7 @@ import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
 import { addManualCandidate } from '../sourcing/manual.js';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
+import { updateCandidateContact } from '../candidates/updateCandidate.js';
 import { SOURCE_LABELS, type SearchSource } from '../sourcing/search.js';
 import { startSourcing } from '../sourcing/webSourcing.js';
 import { startScoring, type SourcingDeps } from '../sourcing/service.js';
@@ -139,6 +140,14 @@ export async function confirmAction(
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
         break;
       }
+      case 'update_candidate': {
+        // payload = { jobId, candidateId, name, before, changes }. The recruiter may have
+        // corrected the new email/link on the card (e.g. a typo the AI pointed out).
+        const payload = action.payload as { jobId: string; candidateId: string; changes: Record<string, unknown> };
+        const updated = await updateCandidateContact(payload.jobId, payload.candidateId, { ...payload.changes, ...(edits ?? {}) }, { userId, actor: 'ai' });
+        result = { jobId: payload.jobId, name: updated.candidate.name, changed: updated.changed };
+        break;
+      }
       case 'delete_all_candidates': {
         // payload = { jobId, jobCode, title, count }. Same function as the "Delete all" button.
         const payload = action.payload as { jobId: string };
@@ -172,6 +181,8 @@ export async function confirmAction(
     const finalPayload =
       action.type === 'update_job'
         ? { ...(action.payload as object), changes: { ...(action.payload as { changes: object }).changes, ...(edits ?? {}) } }
+        : action.type === 'update_candidate'
+          ? { ...(action.payload as object), changes: { ...(action.payload as { changes: object }).changes, ...(edits ?? {}) } }
         : action.type === 'add_candidate'
           ? { ...(action.payload as object), candidate: { ...(action.payload as { candidate: object }).candidate, ...(edits ?? {}) } }
           : { ...(action.payload as object), ...(edits ?? {}) };

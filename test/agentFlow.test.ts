@@ -132,5 +132,15 @@ describe('chat agent: AI calls per message', () => {
     expect(result.reply).toContain('- **No Mail One** (#2, score 85)');
     expect(result.reply).toContain('- **No Mail Two** (not scored yet)');
   });
+
+  it('proposes an email change for one candidate in one call, pointing out a typo', async () => {
+    const { job, userId } = await setup();
+    const { ai, seen } = scriptedAi([call('propose_candidate_contact_edit', { name: 'Rafi Karim', email: 'rafi.new@gmai.com' })]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: "set Rafi's email" });
+    expect(seen).toHaveLength(1);
+    expect(result.actionIds).toHaveLength(1);
+    expect(result.reply).toMatch(/^Here's a card to update Rafi Karim's email in JOB-0001\. Note: the email domain looks like a typo of gmail\.com/);
+    expect((await CandidateModel.findOne({ name: 'Rafi Karim' }).lean())?.email).toBe('rafi@example.com'); // unchanged until Confirm
+  });
 });
 
