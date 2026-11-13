@@ -215,7 +215,8 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
       }
 
       const newlyScored = scored;
-      await ActivityModel.create({
+      // Only log when something actually happened (a run with nothing to do isn't news).
+      if (newlyScored || skipped || notScored) await ActivityModel.create({
         jobId: job._id,
         type: 'candidate_scored',
         actor: 'ai',
