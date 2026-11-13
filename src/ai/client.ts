@@ -46,6 +46,8 @@ export interface StructuredRequest<T> {
   mock: () => T;
   /** Which job (or pending extraction) to charge the tokens to. */
   target?: UsageTarget;
+  /** The recruiter who triggered this call (for the token dashboard). */
+  userId?: string | null;
 }
 
 export interface Ai {
@@ -97,7 +99,7 @@ export function createAi(settings: AiSettings): Ai {
   }
 
   async function structured<T>(request: StructuredRequest<T>) {
-    const { task, role, system, user, schema, mock, target } = request;
+    const { task, role, system, user, schema, mock, target, userId } = request;
     let data: T;
     let usage: TokenUsage;
 
@@ -125,7 +127,7 @@ export function createAi(settings: AiSettings): Ai {
       }
     }
 
-    await recordUsage({ task, role, model: model ? settings.models[role] : 'mock', usage, target });
+    await recordUsage({ task, role, model: model ? settings.models[role] : 'mock', usage, target, userId });
     return { data, usage };
   }
 

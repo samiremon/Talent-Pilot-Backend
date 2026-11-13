@@ -9,6 +9,7 @@ import { AppError } from '../errors.js';
 import { ActivityModel } from '../models/activity.js';
 import { CandidateModel } from '../models/candidate.js';
 import { JobModel, REMOTE_POLICIES } from '../models/job.js';
+import { UserModel } from '../models/user.js';
 import { CANDIDATE_STATUSES, type CandidateStatus } from '../pipeline/status.js';
 
 /** { sourced: 3, accepted: 1, ... } with every status present (0 if none). */
@@ -86,17 +87,43 @@ export async function listCandidates(jobId: string) {
   });
 }
 
-export async function listActivity(filter: { jobId?: string }, limit = 100) {
-  const query = filter.jobId ? { jobId: parseId(filter.jobId) } : {};
+/** id -> name for a set of user ids (one query). Deleted users show as "Former user". */
+export async function userNames(ids: unknown[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter(Boolean).map(String))];
+  if (unique.length === 0) return new Map();
+  const users = await UserModel.find({ _id: { $in: unique } }, { name: 1 }).lean();
+  const names = new Map(users.map((u) => [String(u._id), u.name]));
+  for (const id of unique) if (!names.has(id)) names.set(id, 'Former user');
+  return names;
+}
+
+/**
+ * The history log, newest first, with the person's NAME on each line and the job title.
+ * Filters: one job; and/or only rows older than `before` (for "load more").
+ */
+export async function listActivity(filter: { jobId?: string; before?: Date }, limit = 100) {
+  const query: Record<string, unknown> = {};
+  if (filter.jobId) query.jobId = parseId(filter.jobId);
+  if (filter.before) query.createdAt = { $lt: filter.before };
   const rows = await ActivityModel.find(query).sort({ createdAt: -1 }).limit(limit).lean();
+
+  const [names, jobs] = await Promise.all([
+    userNames(rows.map((r) => r.userId)),
+    JobModel.find({ _id: { $in: [...new Set(rows.map((r) => String(r.jobId)))] } }, { title: 1 }).lean(),
+  ]);
+  const titles = new Map(jobs.map((j) => [String(j._id), j.title]));
+
   return rows.map(({ _id, __v, jobId, candidateId, userId, undoOf, ...rest }) => {
     void __v;
-    void userId;
     return {
       id: String(_id),
       jobId: String(jobId),
+      jobTitle: titles.get(String(jobId)) ?? 'Deleted job',
       candidateId: candidateId ? String(candidateId) : null,
       undoOf: undoOf ? String(undoOf) : null,
+      userId: userId ? String(userId) : null,
+      // The person behind it: the recruiter themself, or the recruiter whose AI did it.
+      userName: userId ? (names.get(String(userId)) ?? null) : null,
       ...rest,
     };
   });

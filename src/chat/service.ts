@@ -9,11 +9,20 @@ import { AppError } from '../errors.js';
 import { parseId } from '../jobs/service.js';
 import { ChatMessageModel, PendingActionModel } from '../models/chat.js';
 import { JobModel } from '../models/job.js';
+import { UserModel } from '../models/user.js';
 import { presentAction } from './actions.js';
 import { runAgent } from './agent.js';
 
-/** How many earlier messages the AI sees (keeps prompts small and the free quota safe). */
-const HISTORY_SIZE = 16;
+/**
+ * CONTEXT-WINDOW BUDGET for the conversation the AI sees:
+ *   - newest messages first, until about HISTORY_TOKEN_BUDGET tokens are used (≈4 chars/token)
+ *   - never more than HISTORY_MAX_MESSAGES
+ *   - long OLD messages (pasted job descriptions...) are shortened to a one-line note;
+ *     the full text stays in the database and the JD tool still reads it
+ */
+const HISTORY_TOKEN_BUDGET = 3000;
+const HISTORY_MAX_MESSAGES = 30;
+const LONG_MESSAGE_CHARS = 600;
 
 type StoredMessage = {
   _id: unknown;
@@ -44,18 +53,43 @@ export async function listMessages(userId: string, limit = 100) {
   return present(rows.reverse());
 }
 
-/** Turns saved messages into what the AI model reads (cards described in words). */
-async function toModelHistory(rows: StoredMessage[]): Promise<BaseMessage[]> {
+/** A long old message becomes a short note (saves thousands of tokens per turn). */
+export function shortenForHistory(text: string): string {
+  if (text.length <= LONG_MESSAGE_CHARS) return text;
+  const preview = text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  return `[Long message shortened to save space: ${text.length} characters, starting "${preview}…"]`;
+}
+
+/**
+ * Turns saved messages (oldest first) into what the AI model reads: cards described in
+ * words, long messages shortened, and only as many recent messages as fit the budget.
+ */
+export async function toModelHistory(rows: StoredMessage[]): Promise<BaseMessage[]> {
   const actions = await PendingActionModel.find({ _id: { $in: rows.map((r) => r.actionId).filter(Boolean) } }).lean();
   const byId = new Map(actions.map((a) => [String(a._id), a]));
-  return rows.map((row) => {
-    if (row.role === 'user') return new HumanMessage(row.text);
+
+  const asText = rows.map((row) => {
+    if (row.role === 'user') return { role: 'user' as const, text: shortenForHistory(row.text) };
     const action = row.actionId ? byId.get(String(row.actionId)) : undefined;
     const card = action
       ? `\n[Card: ${action.type} "${String((action.payload as { title?: string }).title ?? '')}", status: ${action.status}]`
       : '';
-    return new AIMessage(`${row.text}${card}`);
+    return { role: 'assistant' as const, text: `${shortenForHistory(row.text)}${card}` };
   });
+
+  // Walk back from the newest message, keeping messages while they fit the budget.
+  const kept: typeof asText = [];
+  let tokens = 0;
+  for (let i = asText.length - 1; i >= 0 && kept.length < HISTORY_MAX_MESSAGES; i--) {
+    const cost = Math.ceil(asText[i]!.text.length / 4);
+    if (tokens + cost > HISTORY_TOKEN_BUDGET) break;
+    tokens += cost;
+    kept.unshift(asText[i]!);
+  }
+  // Start on a recruiter message: a reply without its question would confuse the model.
+  while (kept.length && kept[0]!.role !== 'user') kept.shift();
+
+  return kept.map((m) => (m.role === 'user' ? new HumanMessage(m.text) : new AIMessage(m.text)));
 }
 
 export async function sendMessage(ai: Ai, userId: string, text: string, jobId?: string) {
@@ -64,15 +98,19 @@ export async function sendMessage(ai: Ai, userId: string, text: string, jobId?: 
   const user = new Types.ObjectId(userId);
 
   // History BEFORE saving the new message, so it isn't sent twice.
-  const earlier = (await ChatMessageModel.find({ userId: user }).sort({ createdAt: -1 }).limit(HISTORY_SIZE).lean()).reverse();
+  const earlier = (await ChatMessageModel.find({ userId: user }).sort({ createdAt: -1 }).limit(HISTORY_MAX_MESSAGES).lean()).reverse();
+  const me = await UserModel.findById(user, { name: 1 }).lean();
 
   const userMessage = await ChatMessageModel.create({ userId: user, role: 'user', text, jobId: jobObjectId });
 
   const result = await runAgent({
     ai,
     userId,
+    userName: me?.name ?? 'the recruiter',
     jobId: jobId ?? undefined,
     history: await toModelHistory(earlier),
+    // Full, unshortened texts (newest first) for the job-description tool.
+    recentUserTexts: earlier.filter((m) => m.role === 'user').map((m) => m.text).reverse(),
     text,
   });
 

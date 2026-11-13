@@ -37,7 +37,7 @@ export function aiRouter(ai: Ai): Router {
     aiLimiter,
     asyncHandler(async (req, res) => {
       const { description } = extractBody.parse(req.body);
-      const result = await extractJob(ai, description);
+      const result = await extractJob(ai, description, req.user!.id);
       req.log.info(
         { mode: result.mode, tokens: result.usage.inputTokens + result.usage.outputTokens, removed: result.removed.length },
         'Job details extracted',

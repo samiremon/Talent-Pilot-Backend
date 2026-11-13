@@ -16,6 +16,8 @@ export type AiRole = (typeof AI_ROLES)[number];
 
 const aiUsageSchema = new Schema({
   jobId: { type: Types.ObjectId, ref: 'Job', default: null },
+  // The recruiter whose action used these tokens (null = the system, e.g. a background job).
+  userId: { type: Types.ObjectId, ref: 'User', default: null },
   extractionId: { type: String, default: null },
   task: { type: String, required: true }, // e.g. "extract_job", "score_candidates"
   role: { type: String, enum: AI_ROLES, required: true },
@@ -26,6 +28,8 @@ const aiUsageSchema = new Schema({
 });
 
 aiUsageSchema.index({ jobId: 1, createdAt: -1 });
+aiUsageSchema.index({ userId: 1, createdAt: -1 });
+aiUsageSchema.index({ createdAt: -1 });
 aiUsageSchema.index({ extractionId: 1 }, { partialFilterExpression: { extractionId: { $type: 'string' } } });
 
 export type AiUsage = InferSchemaType<typeof aiUsageSchema>;

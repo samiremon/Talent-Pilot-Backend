@@ -77,6 +77,7 @@ export async function confirmAction(actionId: string, userId: string, edits?: Re
           jobId: new Types.ObjectId(job.id),
           type: 'job_updated',
           actor: 'ai',
+          userId: new Types.ObjectId(userId), // whose AI proposed it
           message: 'Proposed by the AI from a pasted job description; the recruiter reviewed and confirmed it',
         });
         result = { jobId: job.id, title: job.title };

@@ -1,28 +1,37 @@
 /**
  * What the AI assistant "knows" about the current situation, rebuilt before every reply.
  *
- * The recruiter can do everything by hand in the UI as well as through the chat. So the
- * AI can't rely on its own chat history to know what happened: someone may have created
- * a job, rejected a candidate or undone a change with a button. Every one of those
- * actions is in the Activity log, so we turn the log (plus a short summary of the jobs)
- * into plain text and give it to the AI with each message.
+ * The recruiter (or a teammate) can do everything by hand in the UI as well as through the
+ * chat. So the AI can't rely on its own chat history to know what happened: every action
+ * is in the Activity log, so we turn the log (plus a short summary of the jobs) into plain
+ * text and give it to the AI with each message, with the real name of who did what.
+ *
+ * CONTEXT-WINDOW BUDGET (keeps every message small and the free AI quota safe):
+ *   - the job the recruiter is looking at: full detail; other jobs: one short line each,
+ *     at most MAX_OTHER_JOBS (newest first)
+ *   - activity: at most `activityLimit` lines, each squeezed to one short line
+ *   - a hard cap on the whole text (MAX_CHARS): if it's still too long, the OLDEST
+ *     activity lines are dropped first, then the extra jobs
+ *   - anything else the AI needs (e.g. a job's candidates) it fetches with a tool, on demand
  *
  * Example output:
  *
  *   ## Jobs
- *   - "Senior React Developer" (id 6af6…, active): 23 candidates: 18 Sourced, 5 Accepted
+ *   - "Senior React Developer" (id 6af6…, active): 23 candidates: 18 Sourced, 5 Accepted ← open on screen
  *
- *   ## Recent activity (oldest first)
- *   - 2026-11-13 10:40 UTC · Recruiter (in the UI) · Job created: Senior React Developer
- *   - 2026-11-13 10:42 UTC · AI · Sara Ahmed: Sourced → Accepted
+ *   ## Recent activity on this job (oldest first)
+ *   - 2026-11-13 10:40 UTC · Rina (recruiter) · Job created: Senior React Developer
+ *   - 2026-11-13 10:42 UTC · AI for Rina · Proposed by the AI from a pasted job description…
  *
- * The text is DATA for the AI, not instructions: candidate names and job titles come
- * from outside, so the AI's system prompt tells it to never follow instructions found here.
+ * The text is DATA for the AI, not instructions: names and job titles come from outside,
+ * so the AI's system prompt tells it to never follow instructions found here.
  */
 import { listActivity, listJobs } from '../jobs/service.js';
 import { STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 
-const ACTOR_LABELS = { recruiter: 'Recruiter (in the UI)', ai: 'AI', system: 'System' } as const;
+/** ~4 characters per token: 6,000 characters ≈ 1,500 tokens. */
+const MAX_CHARS = 6000;
+const MAX_OTHER_JOBS = 10;
 
 /** "2026-11-13T10:42:05.123Z" -> "2026-11-13 10:42 UTC" (short, unambiguous). */
 function shortTime(date: Date | string): string {
@@ -30,48 +39,74 @@ function shortTime(date: Date | string): string {
 }
 
 /** Keeps outside text on one line and short, so it can't break the layout of the context. */
-function clean(text: string, max = 200): string {
+export function clean(text: string, max = 200): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+/** "Rina (recruiter)", "AI for Rina", or "System". */
+function who(actor: 'recruiter' | 'ai' | 'system', userName: string | null): string {
+  if (actor === 'recruiter') return `${clean(userName ?? 'A recruiter', 60)} (recruiter)`;
+  if (actor === 'ai') return userName ? `AI for ${clean(userName, 60)}` : 'AI';
+  return 'System';
 }
 
 export interface ContextOptions {
   /** The job the recruiter is looking at, if any: its activity is shown in more detail. */
   jobId?: string;
-  /** How many activity lines to include. */
+  /** How many activity lines to include at most. */
   activityLimit?: number;
 }
 
-export async function buildAssistantContext({ jobId, activityLimit = 30 }: ContextOptions = {}): Promise<string> {
+export async function buildAssistantContext({ jobId, activityLimit = 15 }: ContextOptions = {}): Promise<string> {
   const [jobs, activity] = await Promise.all([listJobs(), listActivity(jobId ? { jobId } : {}, activityLimit)]);
 
-  const lines: string[] = ['## Jobs'];
-  if (jobs.length === 0) {
-    lines.push('- No jobs yet.');
-  } else {
-    for (const job of jobs.slice(0, 20)) {
-      // Only mention statuses that actually have candidates: shorter and easier to read.
-      const breakdown = Object.entries(job.counts)
-        .filter(([, n]) => n > 0)
-        .map(([status, n]) => `${n} ${STATUS_LABELS[status as CandidateStatus]}`)
-        .join(', ');
-      const marker = job.id === jobId ? ' ← the recruiter is looking at this job' : '';
-      lines.push(
-        `- "${clean(String(job.title), 120)}" (id ${job.id}, ${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}${marker}`,
-      );
-    }
-  }
+  // The open job first (in full), then the newest others.
+  const open = jobs.find((j) => j.id === jobId);
+  const others = jobs.filter((j) => j.id !== jobId).slice(0, MAX_OTHER_JOBS);
+  const hiddenJobs = jobs.length - (open ? 1 : 0) - others.length;
 
-  lines.push('', jobId ? '## Recent activity on this job (oldest first)' : '## Recent activity (oldest first)');
-  if (activity.length === 0) {
-    lines.push('- Nothing yet.');
-  } else {
-    // listActivity returns newest first; a story reads better oldest first.
-    for (const item of [...activity].reverse()) {
-      const undone = item.undone ? ' (later undone)' : '';
-      lines.push(`- ${shortTime(item.createdAt)} · ${ACTOR_LABELS[item.actor]} · ${clean(item.message)}${undone}`);
-    }
-  }
+  const jobLine = (job: (typeof jobs)[number], detailed: boolean) => {
+    // Only mention statuses that actually have candidates: shorter and easier to read.
+    const breakdown = Object.entries(job.counts)
+      .filter(([, n]) => n > 0)
+      .map(([status, n]) => `${n} ${STATUS_LABELS[status as CandidateStatus]}`)
+      .join(', ');
+    const base = `- "${clean(String(job.title), 120)}" (id ${job.id}, ${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}`;
+    if (!detailed) return base;
+    const skills = job.mustHaveSkills.length ? ` | must-have: ${clean(job.mustHaveSkills.join(', '), 160)}` : '';
+    return `${base}${skills} ← open on screen`;
+  };
 
-  return lines.join('\n');
+  const jobLines = [...(open ? [jobLine(open, true)] : []), ...others.map((j) => jobLine(j, false))];
+  if (hiddenJobs > 0) jobLines.push(`- …and ${hiddenJobs} older job(s) (ask, and I can look them up)`);
+
+  // listActivity returns newest first; a story reads better oldest first.
+  const activityLines = [...activity]
+    .reverse()
+    .map(
+      (item) =>
+        `- ${shortTime(item.createdAt)} · ${who(item.actor, item.userName)} · ${clean(item.message, 160)}${item.undone ? ' (later undone)' : ''}${jobId ? '' : ` [${clean(item.jobTitle, 60)}]`}`,
+    );
+
+  const render = () =>
+    [
+      '## Jobs',
+      ...(jobLines.length ? jobLines : ['- No jobs yet.']),
+      '',
+      jobId ? '## Recent activity on this job (oldest first)' : '## Recent activity, all jobs (oldest first)',
+      ...(activityLines.length ? activityLines : ['- Nothing yet.']),
+    ].join('\n');
+
+  // Budget guard: drop the oldest activity, then extra jobs, until it fits.
+  let text = render();
+  while (text.length > MAX_CHARS && activityLines.length > 3) {
+    activityLines.shift();
+    text = render();
+  }
+  while (text.length > MAX_CHARS && jobLines.length > 1) {
+    jobLines.splice(jobLines.length - 1, 1);
+    text = render();
+  }
+  return text;
 }

@@ -15,17 +15,28 @@ export async function recordUsage({
   model,
   usage,
   target,
+  userId,
 }: {
   task: string;
   role: AiRole;
   model: string;
   usage: TokenUsage;
   target?: UsageTarget;
+  /** Who triggered the call (shown on the Token usage page). */
+  userId?: string | null;
 }): Promise<void> {
   const jobId = target && 'jobId' in target ? new Types.ObjectId(String(target.jobId)) : null;
   const extractionId = target && 'extractionId' in target ? target.extractionId : null;
 
-  await AiUsageModel.create({ task, role, model, jobId, extractionId, ...usage });
+  await AiUsageModel.create({
+    task,
+    role,
+    model,
+    jobId,
+    extractionId,
+    userId: userId ? new Types.ObjectId(userId) : null,
+    ...usage,
+  });
   if (jobId) await addToJob(jobId, usage, 1);
 }
 

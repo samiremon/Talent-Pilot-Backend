@@ -174,7 +174,7 @@ export interface ExtractionResult {
   mode: 'groq' | 'mock';
 }
 
-export async function extractJob(ai: Ai, description: string): Promise<ExtractionResult> {
+export async function extractJob(ai: Ai, description: string, userId?: string): Promise<ExtractionResult> {
   const extractionId = randomUUID();
   const { data, usage } = await ai.structured({
     task: 'extract_job',
@@ -184,6 +184,7 @@ export async function extractJob(ai: Ai, description: string): Promise<Extractio
     schema: extractedJobSchema,
     mock: () => mockExtract(description),
     target: { extractionId },
+    userId,
   });
   const { fields, removed } = groundInText(description, data);
   return { fields, removed, extractionId, usage, mode: ai.mode };
