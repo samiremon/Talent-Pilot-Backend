@@ -46,7 +46,7 @@ Scope: ONLY hiring work in TalentPilot (jobs, candidates, scores, pipeline, outr
 Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
-- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time).
+- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For ANY question about candidates' emails (who has one, who doesn't), use list_candidate_emails.
 - You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
@@ -89,6 +89,50 @@ function candidateLine(
     c.status,
     ...(c.scoreReason ? [clean(c.scoreReason, 100)] : []),
   ].join(' | ');
+}
+
+/** Above this many people in one list, the rest is counted (and the job page's Email filter
+ *  is suggested) so one answer can never blow the AI's per-minute token budget. */
+const MAX_EMAIL_LIST = 300;
+
+/**
+ * The full "who has an email" answer for a job, built from the database (not by the AI):
+ *   **31 of 79 candidates in JOB-0003 have an email:**
+ *   - **Sara Ahmed**: sara.ahmed@example.com (#1, score 100)
+ *   ...
+ * Everyone is listed, best rank first (unscored people last).
+ */
+async function emailListReply(job: { _id: Types.ObjectId; title: string; jobNumber?: number | null }, which: 'found' | 'missing' | 'all') {
+  const code = jobCode(job.jobNumber ?? null);
+  const everyone = await listCandidates(String(job._id)); // best score first, unscored last
+  const { ranks } = await candidateRanks(job._id);
+  if (everyone.length === 0) return `${code} has no candidates yet.`;
+  const withEmail = everyone.filter((c) => c.email);
+  const without = everyone.filter((c) => !c.email);
+  const rankText = (c: (typeof everyone)[number]) =>
+    ranks.has(c.id) ? `#${ranks.get(c.id)}, score ${c.score}` : 'not scored yet';
+  const list = (people: typeof everyone, line: (c: (typeof everyone)[number]) => string) => {
+    const shown = people.slice(0, MAX_EMAIL_LIST).map(line);
+    if (people.length > MAX_EMAIL_LIST) shown.push(`- …and ${people.length - MAX_EMAIL_LIST} more: use the Email filter on the job page to see them all.`);
+    return shown.join('\n');
+  };
+
+  const parts: string[] = [];
+  if (which === 'found' || which === 'all') {
+    parts.push(
+      withEmail.length
+        ? `**${withEmail.length} of ${everyone.length} candidates in ${code} have an email:**\n${list(withEmail, (c) => `- **${clean(c.name, 60)}**: ${c.email} (${rankText(c)})`)}`
+        : `None of the ${everyone.length} candidates in ${code} has an email yet.`,
+    );
+  }
+  if (which === 'missing' || which === 'all') {
+    parts.push(
+      without.length
+        ? `**${without.length} of ${everyone.length} candidates in ${code} have no email** (web search results never include one):\n${list(without, (c) => `- **${clean(c.name, 60)}** (${rankText(c)})`)}`
+        : `All ${everyone.length} candidates in ${code} have an email.`,
+    );
+  }
+  return parts.join('\n\n');
 }
 
 /** A long message is probably a pasted job description. */
@@ -153,6 +197,10 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
   // and reply with these, instead of a second AI call that would re-send the whole prompt
   // (~3,500 tokens) just to say the same thing.
   const cardIntros: string[] = [];
+  // Answers that go to the recruiter EXACTLY as a tool wrote them, straight from the
+  // database (e.g. the full list of who has an email). The AI doesn't retype them, so
+  // nothing can be skipped, cut short or made up, and no second AI call is needed.
+  const directReplies: string[] = [];
   const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   const target = jobId ? { jobId } : undefined;
 
@@ -483,6 +531,29 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
+      async ({ job, which }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        directReplies.push(await emailListReply(found, which ?? 'found'));
+        return 'The complete list was shown to the recruiter.';
+      },
+      {
+        name: 'list_candidate_emails',
+        description:
+          "Show the recruiter the COMPLETE list of a job's candidates whose email was found (with the emails), or who have no email, or both. The list goes to the recruiter directly, exactly from the database. ALWAYS use this for any question about candidates' emails (who has one, who doesn't, what their emails are).",
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          which: z.enum(['found', 'missing', 'all']).optional().describe('"found" = with an email (default), "missing" = without one, "all" = both lists'),
+        }),
+      },
+    ),
+    tool(
       async ({ jobId: id, fromRank, email }) => {
         let found;
         try {
@@ -614,7 +685,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
     // After tools: if a card was made, we're done (the reply is built from cardIntros
     // below, no second AI call). Otherwise (a lookup, or a "which one?" answer from a
     // tool), the AI gets the tool's result and writes the answer.
-    .addConditionalEdges('tools', () => (actionIds.length > 0 ? END : 'agent'), ['agent', END])
+    .addConditionalEdges('tools', () => (actionIds.length > 0 || directReplies.length > 0 ? END : 'agent'), ['agent', END])
     .compile();
 
   // recursionLimit stops a confused model from looping on tools forever: 6 steps = at most
@@ -642,8 +713,10 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
   // tool). Otherwise: the AI's own last message.
   const aiText = (m: unknown) => (m instanceof AIMessage ? String(m.content ?? '').trim() : '');
   const reply = actionIds.length
-    ? [...result.messages.slice(history.length + 1).map(aiText), ...cardIntros].filter(Boolean).join('\n\n')
-    : aiText(last);
+    ? [...result.messages.slice(history.length + 1).map(aiText), ...cardIntros, ...directReplies].filter(Boolean).join('\n\n')
+    : directReplies.length
+      ? directReplies.join('\n\n')
+      : aiText(last);
 
   return {
     reply: actionIds.length

@@ -111,5 +111,26 @@ describe('chat agent: AI calls per message', () => {
     await runAgent({ ai: all.ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'list them' });
     expect(String(all.seen[1]!.find((m) => m instanceof ToolMessage)?.content)).toMatch(/Sara Ahmed \| score 90 \| email sara@example.com/);
   });
+
+  it('lists EVERYONE whose email was found (no "first 10"), straight from the database, in one call', async () => {
+    const { job, userId } = await setup(); // Sara Ahmed 90, Sara Khan 70, Rafi Karim 50 (with emails)
+    // 15 more with an email and 2 without: more than one "page" of 10.
+    await CandidateModel.insertMany([
+      ...Array.from({ length: 15 }, (_, i) => ({ jobId: job._id, source: 'csv', name: `Person ${String(i + 1).padStart(2, '0')}`, email: `p${i + 1}@example.com`, score: 40 - i })),
+      { jobId: job._id, source: 'web', name: 'No Mail One', profileUrl: 'https://www.linkedin.com/in/nomail1', score: 85 },
+      { jobId: job._id, source: 'web', name: 'No Mail Two', profileUrl: 'https://www.linkedin.com/in/nomail2' },
+    ]);
+    const { ai, seen } = scriptedAi([call('list_candidate_emails', { which: 'all' })]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'whose emails do we have?' });
+    expect(seen).toHaveLength(1); // the list goes to the recruiter directly: no second AI call
+    const lines = result.reply.split('\n');
+    expect(lines[0]).toBe('**18 of 20 candidates in JOB-0001 have an email:**');
+    expect(lines.filter((l) => l.startsWith('- **') && l.includes('@'))).toHaveLength(18); // all 18, none cut off
+    expect(result.reply).toContain('- **Sara Ahmed**: sara@example.com (#1, score 90)');
+    expect(result.reply).toContain('- **Person 15**: p15@example.com');
+    expect(result.reply).toContain('**2 of 20 candidates in JOB-0001 have no email**');
+    expect(result.reply).toContain('- **No Mail One** (#2, score 85)');
+    expect(result.reply).toContain('- **No Mail Two** (not scored yet)');
+  });
 });
 
