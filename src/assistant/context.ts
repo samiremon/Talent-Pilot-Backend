@@ -20,8 +20,8 @@
  *   - "Senior React Developer" (id 6af6…, active): 23 candidates: 18 Sourced, 5 Accepted ← open on screen
  *
  *   ## Recent activity on this job (oldest first)
- *   - 2026-11-13 10:40 UTC · Rina (recruiter) · Job created: Senior React Developer
- *   - 2026-11-13 10:42 UTC · AI for Rina · Proposed by the AI from a pasted job description…
+ *   - 2026-11-13 10:40 UTC · Rina (you) · Job created: Senior React Developer
+ *   - 2026-11-13 10:42 UTC · AI for Omar (teammate) · Proposed by the AI from a pasted job description…
  *
  * The text is DATA for the AI, not instructions: names and job titles come from outside,
  * so the AI's system prompt tells it to never follow instructions found here.
@@ -44,21 +44,29 @@ export function clean(text: string, max = 200): string {
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 }
 
-/** "Rina (recruiter)", "AI for Rina", or "System". */
-function who(actor: 'recruiter' | 'ai' | 'system', userName: string | null): string {
-  if (actor === 'recruiter') return `${clean(userName ?? 'A recruiter', 60)} (recruiter)`;
-  if (actor === 'ai') return userName ? `AI for ${clean(userName, 60)}` : 'AI';
-  return 'System';
+/**
+ * Who did it, from the point of view of the person chatting:
+ *   "Rina (you)", "Omar (teammate)", "AI for Rina (you)", "AI for Omar (teammate)", "System".
+ * Saying "you"/"teammate" explicitly stops the AI mixing people up (e.g. when an account
+ * is literally named "Recruiter").
+ */
+function who(actor: 'recruiter' | 'ai' | 'system', userId: string | null, userName: string | null, currentUserId?: string): string {
+  if (actor === 'system' || !userId) return actor === 'ai' ? 'AI' : 'System';
+  const relation = userId === currentUserId ? 'you' : 'teammate';
+  const name = clean(userName ?? 'A recruiter', 60);
+  return actor === 'ai' ? `AI for ${name} (${relation})` : `${name} (${relation})`;
 }
 
 export interface ContextOptions {
   /** The job the recruiter is looking at, if any: its activity is shown in more detail. */
   jobId?: string;
+  /** The person chatting, so their own actions are marked "(you)". */
+  currentUserId?: string;
   /** How many activity lines to include at most. */
   activityLimit?: number;
 }
 
-export async function buildAssistantContext({ jobId, activityLimit = 15 }: ContextOptions = {}): Promise<string> {
+export async function buildAssistantContext({ jobId, currentUserId, activityLimit = 15 }: ContextOptions = {}): Promise<string> {
   const [jobs, activity] = await Promise.all([listJobs(), listActivity(jobId ? { jobId } : {}, activityLimit)]);
 
   // The open job first (in full), then the newest others.
@@ -86,7 +94,7 @@ export async function buildAssistantContext({ jobId, activityLimit = 15 }: Conte
     .reverse()
     .map(
       (item) =>
-        `- ${shortTime(item.createdAt)} · ${who(item.actor, item.userName)} · ${clean(item.message, 160)}${item.undone ? ' (later undone)' : ''}${jobId ? '' : ` [${clean(item.jobTitle, 60)}]`}`,
+        `- ${shortTime(item.createdAt)} · ${who(item.actor, item.userId, item.userName, currentUserId)} · ${clean(item.message, 160)}${item.undone ? ' (later undone)' : ''}${jobId ? '' : ` [${clean(item.jobTitle, 60)}]`}`,
     );
 
   const render = () =>

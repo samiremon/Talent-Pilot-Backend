@@ -55,15 +55,16 @@ describe('assistant context', () => {
     const change = await changeCandidateStatus({ candidateId: sara!._id, to: 'accepted', actor: 'recruiter', userId: omar._id });
     await undoStatusChange({ activityId: change.activity._id, actor: 'recruiter', userId: omar._id });
 
-    const text = await buildAssistantContext({ jobId: job.id });
+    // Omar is the one chatting: his actions are "(you)", Rina's are "(teammate)".
+    const text = await buildAssistantContext({ jobId: job.id, currentUserId: String(omar._id) });
 
     expect(text).toContain(`"Senior React Developer" (id ${job.id}, active): 2 candidates: 2 Sourced | must-have: React ← open on screen`);
     // Oldest first, each with the person's name.
     const lines = text.split('\n').filter((l) => l.startsWith('- 20'));
-    expect(lines[0]).toMatch(/Rina \(recruiter\) · Job created: Senior React Developer$/);
+    expect(lines[0]).toMatch(/Rina \(teammate\) · Job created: Senior React Developer$/);
     expect(lines[1]).toMatch(/System · Added 2 candidates from CSV upload$/);
-    expect(lines[2]).toMatch(/Omar \(recruiter\) · Sara Ahmed: Sourced → Accepted \(later undone\)$/);
-    expect(lines[3]).toMatch(/Omar \(recruiter\) · Sara Ahmed: undo, back to Sourced$/);
+    expect(lines[2]).toMatch(/Omar \(you\) · Sara Ahmed: Sourced → Accepted \(later undone\)$/);
+    expect(lines[3]).toMatch(/Omar \(you\) · Sara Ahmed: undo, back to Sourced$/);
   });
 
   it('keeps outside text on one short line', async () => {
