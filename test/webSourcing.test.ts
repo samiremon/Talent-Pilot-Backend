@@ -33,9 +33,18 @@ beforeEach(async () => {
 
 describe('the search queries', () => {
   it('are built from the job: quoted skills, the role without level words, the location unquoted', () => {
-    expect(buildSearchQuery(JOB)).toBe('site:linkedin.com/in "React" "TypeScript" "Next.js" Developer Frontend Dhaka Bangladesh');
-    expect(buildSearchQuery(JOB, 'github')).toBe('site:github.com "React" "TypeScript" Dhaka Bangladesh');
-    expect(buildSearchQuery(JOB, 'stackoverflow')).toBe('site:stackoverflow.com/users "React" "TypeScript" Dhaka Bangladesh');
+    // A SENIOR job: LinkedIn asks for the level and leaves out juniors; the other sites only
+    // leave out clearly-too-junior profiles (their bios rarely say the level).
+    expect(buildSearchQuery(JOB)).toBe(
+      'site:linkedin.com/in "React" "TypeScript" "Next.js" Developer Frontend ("Senior" OR "Lead" OR "Sr") -intern -junior -trainee Dhaka Bangladesh',
+    );
+    expect(buildSearchQuery(JOB, 'github')).toBe('site:github.com "React" "TypeScript" -intern -student Dhaka Bangladesh');
+    expect(buildSearchQuery(JOB, 'stackoverflow')).toBe('site:stackoverflow.com/users "React" "TypeScript" -intern -student Dhaka Bangladesh');
+    // Mid: leave out interns only. Junior: no filter (seniors are welcome).
+    expect(buildSearchQuery({ title: 'React Developer', seniority: 'Mid-level', mustHaveSkills: ['React'], location: null })).toBe(
+      'site:linkedin.com/in "React" Developer -intern -trainee',
+    );
+    expect(buildSearchQuery({ title: 'Junior React Developer', mustHaveSkills: ['React'], location: null })).toBe('site:linkedin.com/in "React" Developer');
     expect(buildSearchQuery({ title: 'Data Engineer', mustHaveSkills: [], location: null })).toBe('site:linkedin.com/in Data Engineer');
   });
 

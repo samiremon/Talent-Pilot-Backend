@@ -29,6 +29,7 @@ import { JobModel } from '../models/job.js';
 import type { TaskEvents } from '../tasks/events.js';
 import type { Processor } from '../tasks/queue.js';
 import { updateTask } from '../tasks/service.js';
+import { applySeniorityCap, jobLevel, LEVEL_LABELS, parseLevel } from './seniority.js';
 
 export const BATCH_SIZE = 10;
 // Enough for a full profile (summary + skills + experience), while a batch of 10 still fits
@@ -39,6 +40,9 @@ const batchSchema = z.object({
   results: z.array(
     z.object({
       id: z.string().describe('The candidate id exactly as given, e.g. "c3"'),
+      level: z
+        .enum(['intern', 'junior', 'mid', 'senior', 'lead', 'unknown'])
+        .describe("The candidate's own seniority level, read from their text (titles, years of experience)"),
       score: z.number().int().min(0).max(100).describe('Fit for the job, 0-100'),
       reason: z.string().describe('One short sentence explaining the score'),
       evidence: z.array(z.string()).describe('1-3 short EXACT quotes copied from this candidate\'s text that support the score'),
@@ -50,9 +54,15 @@ type BatchResult = z.infer<typeof batchSchema>['results'][number];
 const SYSTEM_PROMPT = `You score job candidates for a recruiter.
 
 For each candidate, give:
-- score: 0-100 for how well they fit the job (must-have skills matter most, then seniority, then nice-to-haves and location).
+- level: the candidate's OWN seniority, from their titles and years of experience: intern, junior (under ~2 years), mid (~2-5 years), senior (~5+ years, or a "Senior" title), lead (leads a team, or Lead/Principal/Staff/Head/Architect title). "unknown" if their text doesn't say.
+- score: 0-100 for how well they fit the job. Must-have skills and seniority matter most, then nice-to-haves and location.
 - reason: one short, factual sentence.
 - evidence: 1-3 SHORT quotes copied EXACTLY, word for word, from that candidate's own text, that support the score. Never quote anything that isn't in their text.
+
+Seniority rule (important):
+- MORE senior than the job asks is fine: a senior can score well for a junior or mid job.
+- LESS senior is not: a junior must NOT score high for a senior job, even with all the skills. Say the level gap in the reason.
+- If the level is unknown, say "seniority unclear" in the reason.
 
 Rules:
 - Use only the information given. Don't guess facts about people. If a skill isn't mentioned, treat it as missing.
@@ -109,6 +119,7 @@ function mockScore(
     .slice(0, 2);
   return {
     id: candidate.id,
+    level: parseLevel(candidate.text) ?? 'unknown',
     score,
     reason: must.length
       ? `Matches ${must.length} of ${job.mustHaveSkills.length} must-have skills (${must.join(', ')}).`
@@ -142,6 +153,9 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
       message: total ? `Scoring 0 of ${total}…` : 'Nothing to score.',
     });
 
+    // The level the job asks for, e.g. "Senior React Developer" -> senior (null = not stated).
+    const requiredLevel = jobLevel(job);
+
     /**
      * Asks the AI to score a group of candidates. If the answer comes back BROKEN (Groq:
      * "Failed to parse tool call arguments as JSON" / "model did not call a tool"; this
@@ -161,7 +175,8 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
           user: JSON.stringify({
             job: {
               title: job!.title,
-              seniority: job!.seniority ?? 'not stated',
+              // The level the job asks for (from its seniority field, else its title).
+              seniority: requiredLevel ? LEVEL_LABELS[requiredLevel] : (job!.seniority ?? 'not stated'),
               location: job!.location ?? 'not stated',
               mustHaveSkills: job!.mustHaveSkills,
               niceToHaveSkills: job!.niceToHaveSkills,
@@ -238,12 +253,18 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
                 continue;
               }
               const flagged = looksLikeInjection(c.doc.profileText);
+              // The seniority rule, applied in code: below the job's level = capped score.
+              const capped = applySeniorityCap(r.score, requiredLevel, r.level);
               await CandidateModel.updateOne(
                 { _id: c.doc._id },
                 {
                   $set: {
-                    score: r.score,
-                    scoreReason: (flagged ? '⚠ Profile contains instructions aimed at the AI (ignored). ' : '') + r.reason.trim().slice(0, 300),
+                    score: capped.score,
+                    level: r.level,
+                    scoreReason:
+                      (flagged ? '⚠ Profile contains instructions aimed at the AI (ignored). ' : '') +
+                      r.reason.trim().slice(0, 300) +
+                      (capped.note ? ` ${capped.note}` : ''),
                     evidence: groundEvidence(r.evidence, c.text),
                     flagged,
                   },

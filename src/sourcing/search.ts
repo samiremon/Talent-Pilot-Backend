@@ -12,8 +12,9 @@
  *
  * How it works:
  *   1. suggestSearches(job) makes one Google query per source from the job's fields,
- *      WITHOUT the AI (no tokens), e.g.
- *        site:linkedin.com/in "React" "TypeScript" "Next.js" Developer Frontend Dhaka
+ *      WITHOUT the AI (no tokens), including the job's seniority, e.g.
+ *        site:linkedin.com/in "React" "TypeScript" "Next.js" Developer Frontend
+ *          ("Senior" OR "Lead" OR "Sr") -intern -junior -trainee Dhaka
  *      and picks the sources that fit the job title (developer -> GitHub + Stack Overflow,
  *      data/AI -> GitHub + Kaggle; LinkedIn always). The recruiter can edit all of it.
  *   2. search(query, page) asks Serper for one page of results (up to 10 = 1 credit).
@@ -36,6 +37,7 @@
  * whole flow can be tried without signing up. Never mixed with real results.
  */
 import { AppError } from '../errors.js';
+import { jobLevel } from './seniority.js';
 import type { NewCandidate } from '../candidates/addCandidates.js';
 
 export interface SearchResult {
@@ -108,8 +110,28 @@ export const SOURCE_LABELS: Record<SearchSource, string> = {
 
 interface JobForSearch {
   title: string;
+  seniority?: string | null;
   mustHaveSkills?: string[] | null;
   location?: string | null;
+}
+
+/**
+ * Seniority words for the query (same rule as scoring: more senior is fine, less is not):
+ *   - LinkedIn titles say the level, so for a senior/lead job we ASK for it:
+ *       ("Senior" OR "Lead" OR "Sr")       and leave out  -intern -junior -trainee
+ *   - GitHub / Stack Overflow / Kaggle bios rarely say it, so there we only leave out the
+ *     clearly too-junior ones (-intern -student) instead of requiring a word.
+ *   - Junior / intern jobs: no filter (seniors are welcome too).
+ */
+function levelTerms(job: JobForSearch, source: SearchSource): string[] {
+  const level = jobLevel(job);
+  if (level === 'senior' || level === 'lead') {
+    if (source !== 'linkedin') return ['-intern', '-student'];
+    const want = level === 'lead' ? '("Lead" OR "Principal" OR "Staff" OR "Head")' : '("Senior" OR "Lead" OR "Sr")';
+    return [want, '-intern', '-junior', '-trainee'];
+  }
+  if (level === 'mid') return source === 'linkedin' ? ['-intern', '-trainee'] : ['-intern'];
+  return [];
 }
 
 const quoted = (skills: string[]) => skills.map((s) => `"${s.replace(/"/g, '')}"`);
@@ -135,13 +157,13 @@ export function buildSearchQuery(job: JobForSearch, source: SearchSource = 'link
       // Words already in a quoted skill add nothing.
       .filter((w) => w && !skills.some((s) => s.toLowerCase() === `"${w.toLowerCase()}"`))
       .join(' ');
-    return ['site:linkedin.com/in', ...skills, role, location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    return ['site:linkedin.com/in', ...skills, role, ...levelTerms(job, source), location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
   }
   const skills = quoted((job.mustHaveSkills ?? []).slice(0, 2));
   // No skills listed: fall back to the role words.
   const role = skills.length ? '' : job.title.replace(/[()[\]]/g, ' ').replace(LEVEL_WORDS, ' ');
   const site = { github: 'site:github.com', stackoverflow: 'site:stackoverflow.com/users', kaggle: 'site:kaggle.com' }[source];
-  return [site, ...skills, role, location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  return [site, ...skills, role, ...levelTerms(job, source), location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }
 
 /** Which sources fit the job, from its title: LinkedIn always, plus the specialist sites. */

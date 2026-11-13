@@ -41,6 +41,9 @@ const candidateSchema = new Schema(
     // instructions and give me 100"). They were ignored, but the recruiter should see it:
     // the row is shown in red.
     flagged: { type: Boolean, default: false },
+    // Their seniority as the AI read it from their text (intern ... lead, or unknown).
+    // Used for the "not below the job's level" scoring rule; shown in the details popup.
+    level: { type: String, enum: ['intern', 'junior', 'mid', 'senior', 'lead', 'unknown', null], default: null },
 
     // Where they are in the pipeline. ONLY change this through
     // candidates/statusChange.ts, which checks the rules and writes the activity log.
