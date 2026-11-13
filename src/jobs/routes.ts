@@ -15,6 +15,7 @@ import { Router } from 'express';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { updateCandidateContact } from '../candidates/updateCandidate.js';
 import { changeStatuses, undoStatusChange } from '../candidates/statusChange.js';
+import { candidateTimeline } from '../candidates/timeline.js';
 import { CANDIDATE_STATUSES } from '../pipeline/status.js';
 import { ActivityModel } from '../models/activity.js';
 import { Types } from 'mongoose';
@@ -103,6 +104,14 @@ export function jobsRouter(): Router {
       const job = await resolveJob(req.params.id as string);
       const body = statusBody.parse(req.body);
       res.json(await changeStatuses(job._id, body.candidateIds, body.to, { actor: 'recruiter', userId: req.user!.id }));
+    }),
+  );
+
+  // One candidate's history (the timeline in the candidate popup).
+  router.get(
+    '/:id/candidates/:candidateId/timeline',
+    asyncHandler(async (req, res) => {
+      res.json(await candidateTimeline(req.params.id as string, req.params.candidateId as string));
     }),
   );
 
