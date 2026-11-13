@@ -11,7 +11,6 @@
 import { z } from 'zod';
 import { addCandidates, planCandidates } from '../candidates/addCandidates.js';
 import { AppError } from '../errors.js';
-import { CandidateModel } from '../models/candidate.js';
 import { startScoring, type SourcingDeps } from './service.js';
 
 const blankToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
@@ -45,7 +44,6 @@ export async function addManualCandidate(deps: SourcingDeps, jobId: string, raw:
   const result = await addCandidates(jobId, 'manual', [input], 'recruiter', userId);
   if (result.added === 0) throw new AppError(409, 'CANDIDATE_DUPLICATE', `${input.name} is already a candidate for this job.`);
 
-  const candidate = await CandidateModel.findOne({ jobId, name: input.name, source: 'manual' }).sort({ createdAt: -1 }).lean();
   const task = await startScoring(deps, jobId, userId);
-  return { candidateId: candidate ? String(candidate._id) : null, name: input.name, task };
+  return { candidateId: result.candidateIds[0] ?? null, name: input.name, task };
 }

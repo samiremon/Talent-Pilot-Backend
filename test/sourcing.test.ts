@@ -329,5 +329,33 @@ describe('adding one candidate by hand', () => {
     const samir = await CandidateModel.findOne({ name: 'Samir Yeasir Emon' }).lean();
     expect(samir?.email).toBe('samiremon2001@gmail.com'); // the fix from the card won
     expect(samir?.score).not.toBeNull();
+
+    // When scoring is done, the card asks for the follow-up: score + rank, posted once.
+    const follow = await agent.post(`/chat/actions/${card._id}/follow-up`).send({}).expect(200);
+    expect(follow.body.message.text).toBe(
+      `**Samir Yeasir Emon** scored **${samir!.score}/100** and ranks **#1 of 1** scored candidate in JOB-0001.\n\nWhy: ${samir!.scoreReason}`,
+    );
+    const again = await agent.post(`/chat/actions/${card._id}/follow-up`).send({}).expect(200);
+    expect(again.body.message.id).toBe(follow.body.message.id);
+  });
+});
+
+describe('ranking', () => {
+  it('ranks by score, best first; equal scores share a rank; unscored have none', async () => {
+    const { candidateRanks } = await import('../src/jobs/service.js');
+    const jobId = new Types.ObjectId();
+    const people = [
+      { name: 'A', score: 90 },
+      { name: 'B', score: 80 },
+      { name: 'C', score: 80 },
+      { name: 'D', score: 70 },
+      { name: 'E', score: null },
+    ];
+    const docs = await CandidateModel.insertMany(
+      people.map((p, i) => ({ jobId, source: 'manual', name: p.name, email: `p${i}@example.com`, score: p.score })),
+    );
+    const { ranks, total } = await candidateRanks(jobId);
+    expect(total).toBe(4);
+    expect(docs.map((d) => ranks.get(String(d._id)) ?? null)).toEqual([1, 2, 2, 4, null]);
   });
 });

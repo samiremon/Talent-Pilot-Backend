@@ -92,6 +92,24 @@ export async function listCandidates(jobId: string) {
   });
 }
 
+/**
+ * Ranking of a job's candidates by AI score: #1 = best score.
+ * Same score = same rank (two people on 80 are both #3, the next one is #5), like a
+ * sports table. Only scored candidates are ranked; unscored ones have no rank yet.
+ * The job page computes the same ranks, so the chat and the table always agree.
+ * Returns candidateId -> rank, plus how many candidates are ranked.
+ */
+export async function candidateRanks(jobId: string | Types.ObjectId) {
+  const scored = await CandidateModel.find({ jobId, score: { $ne: null } }, { score: 1 }).sort({ score: -1 }).lean();
+  const ranks = new Map<string, number>();
+  scored.forEach((c, index) => {
+    const previous = scored[index - 1];
+    // Same score as the one above: share their rank. Otherwise rank = position (1-based).
+    ranks.set(String(c._id), previous && previous.score === c.score ? ranks.get(String(previous._id))! : index + 1);
+  });
+  return { ranks, total: scored.length };
+}
+
 /** id -> name for a set of user ids (one query). Deleted users show as "Former user". */
 export async function userNames(ids: unknown[]): Promise<Map<string, string>> {
   const unique = [...new Set(ids.filter(Boolean).map(String))];

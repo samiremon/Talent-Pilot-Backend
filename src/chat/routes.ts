@@ -16,6 +16,7 @@ import multer from 'multer';
 import type { SourcingDeps } from '../sourcing/service.js';
 import { cancelAction, confirmAction } from './actions.js';
 import { attachCsv } from './attachments.js';
+import { postScoringFollowUp } from './followUp.js';
 import { addSystemNote, listMessages, sendMessage } from './service.js';
 
 const sendBody = z.object({
@@ -69,7 +70,7 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
           : card.type === 'update_job'
             ? `Done: the job ${name} was updated.`
             : card.type === 'add_candidate'
-              ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; click their row on the job page to see the score and reason.`
+              ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'import_csv'
               ? `Done: imported ${imported?.added ?? 0} candidate(s)${imported?.duplicates ? `, skipped ${imported.duplicates} duplicate(s)` : ''}.${imported?.taskId ? ' AI scoring has started: you can follow it on the card above or on the job page.' : ''}`
               : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
@@ -108,6 +109,16 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
       const card = await cancelAction(req.params.id as string, req.user!.id);
       const message = await addSystemNote(req.user!.id, 'Okay, cancelled. Nothing was changed.');
       res.json({ card, message });
+    }),
+  );
+
+  // After an "Add candidate" / "Import CSV" card's scoring finishes, the card calls this:
+  // the AI posts the score and rank (posted once; asking again returns the same message).
+  // 409 SCORING_NOT_DONE = still scoring, ask again a bit later.
+  router.post(
+    '/actions/:id/follow-up',
+    asyncHandler(async (req, res) => {
+      res.json({ message: await postScoringFollowUp(req.params.id as string, req.user!.id) });
     }),
   );
 

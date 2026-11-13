@@ -63,14 +63,15 @@ describe('adding candidates', () => {
       { name: 'Rahim again', email: 'RAHIM@example.com' }, // same email, other case
       { name: 'No contact' }, // no email or link: unusable
     ]);
-    expect(first).toEqual({ added: 2, duplicates: 1, invalid: 1 });
+    expect(first).toMatchObject({ added: 2, duplicates: 1, invalid: 1 });
+    expect(first.candidateIds).toHaveLength(2);
 
     // CSV brings Sara again (other spelling of her link) plus one new person.
     const second = await addCandidates(job._id, 'csv', [
       { name: 'Sara A.', profileUrl: 'linkedin.com/in/Sara-Ahmed?ref=csv' },
       { name: 'Nadia Islam', email: 'nadia@example.com' },
     ]);
-    expect(second).toEqual({ added: 1, duplicates: 1, invalid: 0 });
+    expect(second).toMatchObject({ added: 1, duplicates: 1, invalid: 0 });
     expect(await CandidateModel.countDocuments({ jobId: job._id })).toBe(3);
 
     // Each successful import is written to the history.

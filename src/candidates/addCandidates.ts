@@ -27,6 +27,8 @@ export interface AddResult {
   duplicates: number;
   /** Rows we couldn't use at all (no name, or neither a valid email nor a profile link). */
   invalid: number;
+  /** Ids of the people actually added (used for "how did the new people rank?"). */
+  candidateIds: string[];
 }
 
 /** MongoDB's error code for "this would break a unique index". */
@@ -94,11 +96,13 @@ export async function addCandidates(
   }));
 
   let added = 0;
+  let candidateIds: string[] = [];
   if (rows.length > 0) {
     try {
       // ordered:false = keep inserting the others even if one row hits a duplicate.
       const inserted = await CandidateModel.insertMany(rows, { ordered: false });
       added = inserted.length;
+      candidateIds = inserted.map((doc) => String(doc._id));
     } catch (err) {
       // Level 3: someone else saved the same person a moment ago. Count those as duplicates.
       const writeErrors = (err as { writeErrors?: { code?: number; err?: { code?: number } }[] }).writeErrors;
@@ -106,6 +110,7 @@ export async function addCandidates(
       if (!writeErrors || !writeErrors.every((e) => (e.code ?? e.err?.code) === DUPLICATE_KEY)) throw err;
       duplicates += writeErrors.length;
       added = insertedDocs?.length ?? rows.length - writeErrors.length;
+      candidateIds = (insertedDocs ?? []).map((doc) => String((doc as { _id: unknown })._id));
     }
   }
 
@@ -119,5 +124,5 @@ export async function addCandidates(
     });
   }
 
-  return { added, duplicates, invalid };
+  return { added, duplicates, invalid, candidateIds };
 }
