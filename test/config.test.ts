@@ -7,6 +7,7 @@ describe('parseConfig', () => {
       nodeEnv: 'development',
       port: 4000,
       corsOrigins: ['http://localhost:5173'],
+      logLevel: 'info',
     });
   });
 
@@ -27,6 +28,10 @@ describe('parseConfig', () => {
 
   it('rejects an origin that is not an http(s) URL', () => {
     expect(() => parseConfig({ CORS_ORIGINS: 'not-a-url' })).toThrow(/CORS_ORIGINS/);
+  });
+
+  it('rejects an unknown log level', () => {
+    expect(() => parseConfig({ LOG_LEVEL: 'loud' })).toThrow(/LOG_LEVEL/);
   });
 
   it('lists every problem at once', () => {
