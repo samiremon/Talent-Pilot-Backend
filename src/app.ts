@@ -11,7 +11,9 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { pino, type Logger } from 'pino';
 import { pinoHttp } from 'pino-http';
+import { requireAuth } from './auth/requireAuth.js';
 import { authRouter, type AuthOptions } from './auth/routes.js';
+import { jobsRouter, statsRouter } from './jobs/routes.js';
 import { isDatabaseReady } from './db.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 
@@ -94,6 +96,9 @@ export function createApp({
   });
 
   app.use('/auth', authRouter(auth));
+  // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
+  app.use('/jobs', requireAuth, jobsRouter());
+  app.use('/stats', requireAuth, statsRouter());
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.
   app.use(notFoundHandler);
