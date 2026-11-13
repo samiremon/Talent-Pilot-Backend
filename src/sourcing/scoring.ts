@@ -207,7 +207,7 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
             }
             remaining = missed;
           }
-          notScored += remaining.length; // still missing after 2 tries: left for "Score again"
+          notScored += remaining.length; // still missing after 2 tries: scored on the next run
         }
 
         done += batch.length;
@@ -225,7 +225,9 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
       // An honest summary: how many really got a score, and what's left.
       const parts = [`scored ${scored} of ${total}`];
       if (skipped) parts.push(`${skipped} without enough public info`);
-      if (notScored) parts.push(`${notScored} couldn't be scored (press Score again)`);
+      // They stay unscored (never a made-up score) and are picked up by the next scoring run
+      // (e.g. the next CSV upload for this job).
+      if (notScored) parts.push(`${notScored} couldn't be scored this time (they'll be retried on the next scoring run)`);
       await updateTask(events, taskId, {
         status: 'done',
         progress: { done: total, failed: notScored },

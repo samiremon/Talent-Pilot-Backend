@@ -216,9 +216,9 @@ describe('when the AI skips people', () => {
     await scoreCandidatesProcessor({ ai: forgetfulAi(true), events })({ taskId: task.id, jobId: String(job._id) }, { number: 1, isLast: true });
     const done = await TaskModel.findById(task.id).lean();
     // 1st try: only A answered. 2nd try (B, C): only B. C is left.
-    expect(done?.message).toBe("Done: scored 2 of 3, 1 couldn't be scored (press Score again).");
+    expect(done?.message).toBe("Done: scored 2 of 3, 1 couldn't be scored this time (they'll be retried on the next scoring run).");
     expect(done?.progress?.failed).toBe(1);
-    // They're left unscored (not given a made-up score), ready for "Score again".
+    // They're left unscored (not given a made-up score), ready for the next run.
     expect(await CandidateModel.countDocuments({ jobId: job._id, score: null, scoreReason: null })).toBe(1);
   });
 });
