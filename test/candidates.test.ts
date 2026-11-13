@@ -49,7 +49,7 @@ describe('a new job', () => {
     expect(job.status).toBe('active');
     expect(job.remotePolicy).toBe('unknown');
     expect(job.salary).toBeNull();
-    expect(job.aiUsage).toMatchObject({ inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    expect(job.aiUsage).toMatchObject({ inputTokens: 0, outputTokens: 0, calls: 0 });
   });
 });
 

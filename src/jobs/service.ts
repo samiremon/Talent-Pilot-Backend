@@ -4,6 +4,7 @@
  */
 import { Types } from 'mongoose';
 import { z } from 'zod';
+import { attachExtractionUsage, totalUsage } from '../ai/usage.js';
 import { AppError } from '../errors.js';
 import { ActivityModel } from '../models/activity.js';
 import { CandidateModel } from '../models/candidate.js';
@@ -116,6 +117,9 @@ export const createJobInput = z.object({
   location: z.preprocess(blankToNull, z.string().trim().max(200).nullable().default(null)),
   salary: z.preprocess(blankToNull, z.string().trim().max(100).nullable().default(null)),
   remotePolicy: z.enum(REMOTE_POLICIES).default('unknown'),
+  // Set when the fields came from "Fill from description": that AI call's tokens are
+  // then counted on this job.
+  extractionId: z.uuid().optional(),
 });
 export type CreateJobInput = z.infer<typeof createJobInput>;
 
@@ -124,7 +128,9 @@ export type CreateJobInput = z.infer<typeof createJobInput>;
  * `actor` says who pressed the button: normally the recruiter confirming the AI's card.
  */
 export async function createJob(input: CreateJobInput, userId: string) {
-  const job = await JobModel.create({ ...input, createdBy: new Types.ObjectId(userId) });
+  const { extractionId, ...fields } = input;
+  const job = await JobModel.create({ ...fields, createdBy: new Types.ObjectId(userId) });
+  if (extractionId) await attachExtractionUsage(extractionId, job._id);
   await ActivityModel.create({
     jobId: job._id,
     type: 'job_created',
@@ -141,10 +147,11 @@ export async function createJob(input: CreateJobInput, userId: string) {
  * Based on current statuses for now; becomes exact once emails are tracked.
  */
 export async function overview() {
-  const [jobs, perJob, recent] = await Promise.all([
-    JobModel.find({}, { title: 1, status: 1, aiUsage: 1, createdAt: 1 }).sort({ createdAt: -1 }).lean(),
+  const [jobs, perJob, recent, tokens] = await Promise.all([
+    JobModel.find({}, { title: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).lean(),
     countByJob(),
     listActivity({}, 10),
+    totalUsage(),
   ]);
 
   const counts = emptyCounts();
@@ -162,7 +169,8 @@ export async function overview() {
     totalCandidates: total(counts),
     hires: counts.hired,
     replyRate: contacted > 0 ? replied / contacted : null,
-    aiCostUsd: jobs.reduce((sum, j) => sum + (j.aiUsage?.costUsd ?? 0), 0),
+    // The token meter: all AI tokens used so far (input = sent to the AI, output = written by it).
+    aiTokens: tokens,
     counts,
     recentActivity: recent,
     jobs: jobs.slice(0, 5).map((j) => {

@@ -54,6 +54,15 @@ const envSchema = z.object({
   SEED_RECRUITER_EMAIL: optional(z.email('must be a valid email')),
   SEED_RECRUITER_PASSWORD: optional(z.string().min(8, 'must be at least 8 characters')),
   SEED_RECRUITER_NAME: z.string().trim().min(1).default('Recruiter'),
+
+  // --- AI ---
+  // Groq API key (free at https://console.groq.com/keys). Empty = "mock mode":
+  // the app still works end to end with built-in sample answers, no key needed.
+  GROQ_API_KEY: optional(z.string().trim().startsWith('gsk_', 'must start with gsk_ (copy it from console.groq.com/keys)')),
+  // Which model does which job. Change these to try other Groq models.
+  AI_MODEL_AGENT: z.string().trim().min(1).default('openai/gpt-oss-120b'), // chat, reading JDs, writing emails
+  AI_MODEL_BULK: z.string().trim().min(1).default('openai/gpt-oss-20b'), // scoring many candidates, sorting replies
+  AI_MODEL_SAFETY: z.string().trim().min(1).default('openai/gpt-oss-safeguard-20b'), // spotting prompt-injection tricks
   // DEMO ONLY: lets the login page show a "Use demo account" button that fills in the
   // recruiter email and password above. Anyone who can open the site can then log in,
   // so keep this off for anything real.
@@ -74,6 +83,8 @@ export type Config = {
   seedRecruiter?: { email: string; password: string; name: string };
   /** Show the "Use demo account" button (only possible when seedRecruiter is set). */
   demoLoginEnabled: boolean;
+  /** AI settings. `apiKey` undefined = mock mode. */
+  ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
 };
 
 /**
@@ -109,6 +120,10 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     trustProxy: e.TRUST_PROXY,
     // The button needs credentials to fill in, so it's off when no seed account is set.
     demoLoginEnabled: (e.DEMO_LOGIN_ENABLED ?? false) && Boolean(e.SEED_RECRUITER_EMAIL && e.SEED_RECRUITER_PASSWORD),
+    ai: {
+      apiKey: e.GROQ_API_KEY,
+      models: { agent: e.AI_MODEL_AGENT, bulk: e.AI_MODEL_BULK, safety: e.AI_MODEL_SAFETY },
+    },
     seedRecruiter:
       e.SEED_RECRUITER_EMAIL && e.SEED_RECRUITER_PASSWORD
         ? { email: e.SEED_RECRUITER_EMAIL, password: e.SEED_RECRUITER_PASSWORD, name: e.SEED_RECRUITER_NAME }

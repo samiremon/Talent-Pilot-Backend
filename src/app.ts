@@ -11,6 +11,8 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { pino, type Logger } from 'pino';
 import { pinoHttp } from 'pino-http';
+import { createAi, type Ai } from './ai/client.js';
+import { aiRouter } from './ai/routes.js';
 import { requireAuth } from './auth/requireAuth.js';
 import { authRouter, type AuthOptions } from './auth/routes.js';
 import { jobsRouter, statsRouter } from './jobs/routes.js';
@@ -27,7 +29,11 @@ export interface AppOptions {
   auth?: AuthOptions;
   /** Number of proxies in front of us (nginx in Docker = 1); see TRUST_PROXY in config.ts. */
   trustProxy?: number;
+  /** The AI client. Defaults to mock mode (no key), which is what tests use. */
+  ai?: Ai;
 }
+
+const MOCK_AI_MODELS = { agent: 'mock', bulk: 'mock', safety: 'mock' };
 
 /** Accept a caller's request id only if it looks safe; otherwise make a new one. */
 const SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -38,6 +44,7 @@ export function createApp({
   isDatabaseReady: databaseReady = isDatabaseReady,
   auth = { cookieSecure: false, sessionTtlHours: 12 },
   trustProxy = 0,
+  ai = createAi({ models: MOCK_AI_MODELS }),
 }: AppOptions): Express {
   const app = express();
 
@@ -99,6 +106,7 @@ export function createApp({
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
+  app.use('/ai', requireAuth, aiRouter(ai));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.
   app.use(notFoundHandler);

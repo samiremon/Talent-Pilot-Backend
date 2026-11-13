@@ -16,6 +16,11 @@ describe('parseConfig', () => {
       trustProxy: 0,
       seedRecruiter: undefined,
       demoLoginEnabled: false,
+      // No key = mock mode; default models per role.
+      ai: {
+        apiKey: undefined,
+        models: { agent: 'openai/gpt-oss-120b', bulk: 'openai/gpt-oss-20b', safety: 'openai/gpt-oss-safeguard-20b' },
+      },
     });
   });
 
@@ -67,6 +72,12 @@ describe('parseConfig', () => {
     expect(parseConfig({ MONGODB_URI, ...seed }).demoLoginEnabled).toBe(false);
     expect(parseConfig({ MONGODB_URI, ...seed, DEMO_LOGIN_ENABLED: 'true' }).demoLoginEnabled).toBe(true);
     expect(parseConfig({ MONGODB_URI, DEMO_LOGIN_ENABLED: 'true' }).demoLoginEnabled).toBe(false);
+  });
+
+  it('accepts a Groq key and rejects something that is not one', () => {
+    expect(parseConfig({ MONGODB_URI, GROQ_API_KEY: 'gsk_test123' }).ai.apiKey).toBe('gsk_test123');
+    expect(parseConfig({ MONGODB_URI, GROQ_API_KEY: '' }).ai.apiKey).toBeUndefined();
+    expect(() => parseConfig({ MONGODB_URI, GROQ_API_KEY: 'sk-openai' })).toThrow(/GROQ_API_KEY/);
   });
 
   it('rejects a short recruiter password', () => {

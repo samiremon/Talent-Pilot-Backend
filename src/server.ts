@@ -1,4 +1,5 @@
 import type { Server } from 'node:http';
+import { createAi } from './ai/client.js';
 import { createApp } from './app.js';
 import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
@@ -30,7 +31,14 @@ async function start(): Promise<void> {
     logger.warn('No SEED_RECRUITER_EMAIL / SEED_RECRUITER_PASSWORD set: nobody will be able to log in');
   }
 
+  const ai = createAi(config.ai);
+  logger.info(
+    { mode: ai.mode, models: ai.mode === 'groq' ? ai.models : undefined },
+    ai.mode === 'groq' ? 'AI: using Groq' : 'AI: mock mode (no GROQ_API_KEY set)',
+  );
+
   const app = createApp({
+    ai,
     corsOrigins: config.corsOrigins,
     logger,
     trustProxy: config.trustProxy,

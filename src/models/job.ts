@@ -34,12 +34,13 @@ const jobSchema = new Schema(
     status: { type: String, enum: JOB_STATUSES, default: 'active' },
     createdBy: { type: Types.ObjectId, ref: 'User', required: true },
 
-    // Running total of what the AI has cost for this job (the "cost meter").
-    // Updated with $inc every time an AI call is made for this job.
+    // Running total of AI tokens used for this job (the "token meter").
+    // Updated with $inc after every AI call made for this job (see ai/usage.ts).
+    // input = what we sent the AI, output = what it wrote back.
     aiUsage: {
       inputTokens: { type: Number, default: 0 },
       outputTokens: { type: Number, default: 0 },
-      costUsd: { type: Number, default: 0 },
+      calls: { type: Number, default: 0 },
     },
   },
   { timestamps: true },
