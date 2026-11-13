@@ -139,6 +139,14 @@ export async function confirmAction(
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
         break;
       }
+      case 'score_candidates': {
+        // payload = { jobId, jobCode, title, unscored }. Same as the "Score N unscored" button.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; jobCode?: string };
+        const task = await startScoring(deps, payload.jobId, userId);
+        result = { jobId: payload.jobId, jobCode: payload.jobCode, taskId: task.id, total: task.progress.total };
+        break;
+      }
       case 'find_candidates': {
         // payload = { jobId, jobCode, title, searches: [{ source, label, query, checked }], pages }.
         // The recruiter may have ticked other sites or edited the search words on the card.

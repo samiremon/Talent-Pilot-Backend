@@ -213,3 +213,43 @@ describe('Find candidates (sample mode, full flow)', () => {
     expect(log?.actor).toBe('ai');
   });
 });
+
+describe('scoring the unscored candidates again', () => {
+  function makeApp() {
+    const ai = createAi({ models: { agent: 'mock', bulk: 'mock', safety: 'mock' } });
+    const events = createMemoryEvents();
+    const queue = createInlineQueue(() => buildProcessors({ ai, events, queue: () => queue }));
+    return { app: createApp({ corsOrigins: ['http://localhost:5173'], ai, events, queue }), queue };
+  }
+
+  it('offers a "Score again" card in the chat, and scores them after Confirm', async () => {
+    const { app, queue } = makeApp();
+    const agent = request.agent(app);
+    await agent.post('/auth/login').send(RECRUITER).expect(200);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    // Two people a failed scoring run left without a score (no score, no reason).
+    await CandidateModel.insertMany([
+      { jobId: job.id, source: 'csv', name: 'Left One', email: 'one@example.com', profileText: 'React and TypeScript' },
+      { jobId: job.id, source: 'csv', name: 'Left Two', email: 'two@example.com', profileText: 'Next.js developer' },
+    ]);
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { postWithRetryCard } = await import('../src/chat/followUp.js');
+    const { JobModel } = await import('../src/models/job.js');
+
+    // Any follow-up message offers the retry card while people are unscored.
+    const offer = await postWithRetryCard(String(user!._id), 'Scoring finished.', (await JobModel.findById(job.id).lean())!);
+    expect(offer!.text).toMatch(/2 candidates in JOB-0001 couldn't be scored .* Shall I try again\?/);
+    expect(offer!.card).toMatchObject({ type: 'score_candidates', status: 'pending', payload: { unscored: 2 } });
+
+    const res = await agent.post(`/chat/actions/${offer!.card!.id}/confirm`).send({}).expect(200);
+    expect(res.body.message.text).toBe("Done: scoring 2 unscored candidate(s) in JOB-0001 again. I'll post the result here.");
+    await queue.idle();
+    expect(await CandidateModel.countDocuments({ jobId: job.id, score: null, scoreReason: null })).toBe(0);
+
+    // The follow-up for that card: everyone scored now, so no new retry card.
+    const follow = await agent.post(`/chat/actions/${offer!.card!.id}/follow-up`).send({}).expect(200);
+    expect(follow.body.message.text).toBe('Scoring finished for JOB-0001: 2 candidates scored in this job now.');
+    expect(follow.body.message.card).toBeNull();
+  });
+});
+

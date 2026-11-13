@@ -18,13 +18,14 @@
  */
 import { Types } from 'mongoose';
 import { AppError } from '../errors.js';
-import { candidateRanks, parseId } from '../jobs/service.js';
+import { candidateRanks, parseId, unscoredFilter } from '../jobs/service.js';
 import { CandidateModel } from '../models/candidate.js';
 import { ChatMessageModel, PendingActionModel } from '../models/chat.js';
 import { JobModel } from '../models/job.js';
 import { jobCode } from '../models/counter.js';
 import { TaskModel } from '../models/task.js';
-import { addSystemNote, presentMessages } from './service.js';
+import { proposeAction } from './actions.js';
+import { presentMessages } from './service.js';
 
 /** How many of the best new people a CSV import message lists. */
 const TOP_NEW = 3;
@@ -46,7 +47,7 @@ interface FollowUpResult {
 export async function postScoringFollowUp(actionId: string, userId: string) {
   const action = await PendingActionModel.findOne({ _id: parseId(actionId, 'Card'), userId: new Types.ObjectId(userId) });
   if (!action) throw AppError.notFound('Card not found');
-  if (action.status !== 'confirmed' || !['add_candidate', 'import_csv', 'find_candidates'].includes(action.type)) {
+  if (action.status !== 'confirmed' || !['add_candidate', 'import_csv', 'find_candidates', 'score_candidates'].includes(action.type)) {
     throw new AppError(400, 'NO_FOLLOW_UP', 'This card has no scoring result to report.');
   }
   const result = (action.result ?? {}) as FollowUpResult;
@@ -89,9 +90,14 @@ export async function postScoringFollowUp(actionId: string, userId: string) {
       ? await oneCandidateText(result, ranks, total, code)
       : action.type === 'find_candidates'
         ? await searchText(result, ranks, total, code)
-        : await importText(result, ranks, total, code);
+        : action.type === 'score_candidates'
+          ? `Scoring finished for ${code}: ${total} candidate${total === 1 ? '' : 's'} scored in this job now.`
+          : await importText(result, ranks, total, code);
 
-  const message = await addSystemNote(userId, text, jobId);
+  // Anyone in the job still unscored (the AI had a problem with them)? Then the message comes
+  // with a "Score again" card, so the recruiter can retry with one click (nothing runs
+  // until they press Confirm).
+  const message = await postWithRetryCard(userId, text, job);
   action.set({ result: { ...result, followUpMessageId: message!.id } });
   action.markModified('result');
   await action.save();
@@ -158,4 +164,22 @@ async function searchText(result: FollowUpResult, ranks: Map<string, number>, to
   if (unscored) lines.push(`${unscored} couldn't be scored (not enough information in the search result).`);
   lines.push('Search results are short, so check the best ones before reaching out.');
   return lines.join('\n\n');
+}
+
+/**
+ * Posts the follow-up message. If some of the job's candidates are still unscored, it adds
+ * a sentence and a "Score again" card to the same message.
+ */
+export async function postWithRetryCard(userId: string, text: string, job: { _id: Types.ObjectId; title: string; jobNumber?: number | null }) {
+  const unscored = await CandidateModel.countDocuments(unscoredFilter(job._id));
+  const code = jobCode(job.jobNumber ?? null);
+  let actionId: Types.ObjectId | null = null;
+  let fullText = text;
+  if (unscored > 0) {
+    const card = await proposeAction(userId, 'score_candidates', { jobId: String(job._id), jobCode: code, title: job.title, unscored });
+    actionId = card._id as Types.ObjectId;
+    fullText += `\n\n${unscored} candidate${unscored === 1 ? ' in' : 's in'} ${code} couldn't be scored (the AI had a problem with their answer). Shall I try again? Press **Confirm** on the card below.`;
+  }
+  const row = await ChatMessageModel.create({ userId: new Types.ObjectId(userId), role: 'assistant', text: fullText, jobId: job._id, actionId });
+  return (await presentMessages([row.toObject()]))[0];
 }

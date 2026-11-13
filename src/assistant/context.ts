@@ -26,7 +26,7 @@
  * The text is DATA for the AI, not instructions: names and job titles come from outside,
  * so the AI's system prompt tells it to never follow instructions found here.
  */
-import { listActivity, listJobs } from '../jobs/service.js';
+import { listActivity, listJobs, unscoredCounts } from '../jobs/service.js';
 import { STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 
 /** ~4 characters per token: 3,000 characters ≈ 750 tokens (sent with every AI call, and
@@ -68,7 +68,7 @@ export interface ContextOptions {
 }
 
 export async function buildAssistantContext({ jobId, currentUserId, activityLimit = 8 }: ContextOptions = {}): Promise<string> {
-  const [jobs, activity] = await Promise.all([listJobs(), listActivity(jobId ? { jobId } : {}, activityLimit)]);
+  const [jobs, activity, unscored] = await Promise.all([listJobs(), listActivity(jobId ? { jobId } : {}, activityLimit), unscoredCounts()]);
 
   // The open job first (in full), then the newest others.
   const open = jobs.find((j) => j.id === jobId);
@@ -81,7 +81,8 @@ export async function buildAssistantContext({ jobId, currentUserId, activityLimi
       .filter(([, n]) => n > 0)
       .map(([status, n]) => `${n} ${STATUS_LABELS[status as CandidateStatus]}`)
       .join(', ');
-    const base = `- ${job.jobCode ?? job.id} "${clean(String(job.title), 120)}" (${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}`;
+    const notScored = unscored.get(job.id) ?? 0;
+    const base = `- ${job.jobCode ?? job.id} "${clean(String(job.title), 120)}" (${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}${notScored ? ` (${notScored} not scored yet)` : ''}`;
     if (!detailed) return base;
     const skills = job.mustHaveSkills.length ? ` | must-have: ${clean(job.mustHaveSkills.join(', '), 160)}` : '';
     return `${base}${skills} ← open on screen`;

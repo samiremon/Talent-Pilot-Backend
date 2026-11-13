@@ -28,7 +28,7 @@ import { recordUsage } from '../ai/usage.js';
 import { buildAssistantContext, clean } from '../assistant/context.js';
 import { suggestEmailFix } from '../auth/emailCheck.js';
 import { planCandidates } from '../candidates/addCandidates.js';
-import { candidateRanks, getJob, listCandidates, resolveJob, updateJobInput } from '../jobs/service.js';
+import { candidateRanks, getJob, listCandidates, resolveJob, unscoredFilter, updateJobInput } from '../jobs/service.js';
 import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
@@ -47,7 +47,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time).
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically) or remove one, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically) or remove one, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -389,6 +389,31 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
         }),
+      },
+    ),
+    tool(
+      async ({ job }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const unscored = await CandidateModel.countDocuments(unscoredFilter(found._id));
+        if (unscored === 0) return `Everyone in ${code} has been scored already (people without any profile text can't be scored: add their experience first).`;
+        const action = await proposeAction(userId, 'score_candidates', { jobId: String(found._id), jobCode: code, title: found.title, unscored });
+        actionIds.push(String(action._id));
+        cardIntros.push(`Here's a card to score the ${unscored} unscored candidate${unscored === 1 ? '' : 's'} in ${code} "${found.title}" again.`);
+        return `A "Score again" card for ${unscored} candidate(s) in ${code} is now shown with Confirm/Cancel.`;
+      },
+      {
+        name: 'propose_score_candidates',
+        description:
+          "Propose scoring a job's unscored candidates again (e.g. after the AI had a problem). Shows a card to confirm. Use when the recruiter asks to score/rescore the remaining or unscored candidates.",
+        schema: z.object({ job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.') }),
       },
     ),
     tool(

@@ -116,6 +116,24 @@ export async function candidateRanks(jobId: string | Types.ObjectId) {
   return { ranks, total: scored.length };
 }
 
+/**
+ * Candidates the AI hasn't scored yet (no score AND no reason): e.g. a scoring run that hit a
+ * problem. People with no profile text DO have a reason ("not enough information"), so they
+ * aren't counted: scoring them again wouldn't help.
+ */
+export function unscoredFilter(jobId: string | Types.ObjectId) {
+  return { jobId: new Types.ObjectId(String(jobId)), score: null, scoreReason: null };
+}
+
+/** jobId -> number of unscored candidates, for all jobs at once. */
+export async function unscoredCounts(): Promise<Map<string, number>> {
+  const rows = await CandidateModel.aggregate<{ _id: Types.ObjectId; n: number }>([
+    { $match: { score: null, scoreReason: null } },
+    { $group: { _id: '$jobId', n: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r) => [String(r._id), r.n]));
+}
+
 /** id -> name for a set of user ids (one query). Deleted users show as "Former user". */
 export async function userNames(ids: unknown[]): Promise<Map<string, string>> {
   const unique = [...new Set(ids.filter(Boolean).map(String))];
