@@ -1,29 +1,39 @@
 /**
  * Finding candidates on the web with Serper (a Google Search API, https://serper.dev).
  *
+ * Sources (each checked against real Google results before adding it):
+ *   LinkedIn        linkedin.com/in/<name>          every kind of role
+ *   GitHub          github.com/<username>            developers (repositories are skipped)
+ *   Stack Overflow  stackoverflow.com/users/<id>/…   developers (bio + city in the snippet)
+ *   Kaggle          kaggle.com/<username>            data / ML (datasets etc. are skipped)
+ * Considered but left out: Hugging Face (Google returns models and papers, not people),
+ * BDJobs (CVs are behind a paid employer login; job ads only), personal sites (no reliable
+ * way to tell a person from a page).
+ *
  * How it works:
- *   1. buildSearchQuery(job) makes a Google query from the job, WITHOUT the AI (no tokens):
- *        site:linkedin.com/in "React" "TypeScript" "Next.js" Frontend Dhaka Bangladesh
- *      ("site:linkedin.com/in" = only public LinkedIn profile pages). The recruiter can edit
- *      it before anything runs.
+ *   1. suggestSearches(job) makes one Google query per source from the job's fields,
+ *      WITHOUT the AI (no tokens), e.g.
+ *        site:linkedin.com/in "React" "TypeScript" "Next.js" Developer Frontend Dhaka
+ *      and picks the sources that fit the job title (developer -> GitHub + Stack Overflow,
+ *      data/AI -> GitHub + Kaggle; LinkedIn always). The recruiter can edit all of it.
  *   2. search(query, page) asks Serper for one page of results (up to 10 = 1 credit).
  *      Each result is { title, link, snippet }: what Google shows in its result list.
- *   3. resultToCandidate() turns a result into a candidate:
+ *   3. resultToCandidate() turns a result into a candidate, or skips it if it isn't a
+ *      person's profile page:
  *        title   "Sara Ahmed - Senior Frontend Engineer - bKash | LinkedIn"
  *                -> name "Sara Ahmed", headline "Senior Frontend Engineer · bKash"
  *        link    -> profile link (also how duplicates are detected)
  *        snippet -> the text the AI scores
  *
  * We only use what Google shows publicly in search results: we never open or scrape the
- * LinkedIn pages themselves. Snippets are short, so scores rely on less information than
- * a full CV (the AI's reason says so when it matters). No emails: search results don't
- * contain them (a profile link is enough to add someone).
+ * profile pages themselves. Snippets are short, so scores rely on less information than
+ * a full CV. No emails: search results don't contain them (a profile link is enough).
  *
  * Snippets are untrusted text from the internet: the scoring step's prompt-injection guard
  * (and the red "flagged" rows) apply to them like to any other profile.
  *
- * Without SERPER_API_KEY: SAMPLE mode. A few made-up profiles, clearly marked "(sample)",
- * so the whole flow can be tried without signing up. Never mixed with real results.
+ * Without SERPER_API_KEY: SAMPLE mode. Made-up profiles, clearly marked "(sample)", so the
+ * whole flow can be tried without signing up. Never mixed with real results.
  */
 import { AppError } from '../errors.js';
 import type { NewCandidate } from '../candidates/addCandidates.js';
@@ -87,25 +97,72 @@ export function createSearchClient(serperKey?: string, fetchFn: typeof fetch = f
 /** Words that describe the level, not the role: left out of the query (they'd narrow it too much). */
 const LEVEL_WORDS = /\b(senior|sr\.?|junior|jr\.?|lead|principal|staff|mid(-level)?|intern|head|chief)\b/gi;
 
+export const SEARCH_SOURCES = ['linkedin', 'github', 'stackoverflow', 'kaggle'] as const;
+export type SearchSource = (typeof SEARCH_SOURCES)[number];
+export const SOURCE_LABELS: Record<SearchSource, string> = {
+  linkedin: 'LinkedIn',
+  github: 'GitHub',
+  stackoverflow: 'Stack Overflow',
+  kaggle: 'Kaggle',
+};
+
+interface JobForSearch {
+  title: string;
+  mustHaveSkills?: string[] | null;
+  location?: string | null;
+}
+
+const quoted = (skills: string[]) => skills.map((s) => `"${s.replace(/"/g, '')}"`);
+const plainLocation = (job: JobForSearch) => (job.location ?? '').replace(/[",()]/g, ' ').replace(/\s+/g, ' ').trim();
+
 /**
- * A Google query for the job, made from its fields (no AI, no tokens):
- *   site:linkedin.com/in "React" "TypeScript" "Next.js" Frontend Developer Dhaka
- * - up to 3 must-have skills, each in quotes (must appear)
- * - the role from the title, without level words and brackets ("Senior React Developer
- *   (Frontend)" -> "React Developer Frontend"), not quoted (titles are written many ways)
- * - the location, NOT quoted: a quoted city also matches people with that surname
+ * The Google query for one source, made from the job's fields (no AI, no tokens).
+ * - LinkedIn: up to 3 must-have skills in quotes (must appear) + the role from the title
+ *   without level words ("Senior React Developer (Frontend)" -> "React Developer Frontend")
+ *   + the location. Profiles there say what people do, so the role helps.
+ * - GitHub / Stack Overflow / Kaggle: 2 skills + the location (people rarely write job
+ *   titles there, so the role would hide good matches).
+ * The location is NOT quoted: a quoted city also matches people with that surname.
  */
-export function buildSearchQuery(job: { title: string; mustHaveSkills?: string[] | null; location?: string | null }): string {
-  const skills = (job.mustHaveSkills ?? []).slice(0, 3).map((s) => `"${s.replace(/"/g, '')}"`);
-  const role = job.title
-    .replace(/[()[\]]/g, ' ')
-    .replace(LEVEL_WORDS, ' ')
-    .split(/\s+/)
-    // Words already in a quoted skill add nothing.
-    .filter((w) => w && !skills.some((s) => s.toLowerCase() === `"${w.toLowerCase()}"`))
-    .join(' ');
-  const location = (job.location ?? '').replace(/[",()]/g, ' ').replace(/\s+/g, ' ').trim();
-  return ['site:linkedin.com/in', ...skills, role, location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+export function buildSearchQuery(job: JobForSearch, source: SearchSource = 'linkedin'): string {
+  const location = plainLocation(job);
+  if (source === 'linkedin') {
+    const skills = quoted((job.mustHaveSkills ?? []).slice(0, 3));
+    const role = job.title
+      .replace(/[()[\]]/g, ' ')
+      .replace(LEVEL_WORDS, ' ')
+      .split(/\s+/)
+      // Words already in a quoted skill add nothing.
+      .filter((w) => w && !skills.some((s) => s.toLowerCase() === `"${w.toLowerCase()}"`))
+      .join(' ');
+    return ['site:linkedin.com/in', ...skills, role, location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  }
+  const skills = quoted((job.mustHaveSkills ?? []).slice(0, 2));
+  // No skills listed: fall back to the role words.
+  const role = skills.length ? '' : job.title.replace(/[()[\]]/g, ' ').replace(LEVEL_WORDS, ' ');
+  const site = { github: 'site:github.com', stackoverflow: 'site:stackoverflow.com/users', kaggle: 'site:kaggle.com' }[source];
+  return [site, ...skills, role, location].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Which sources fit the job, from its title: LinkedIn always, plus the specialist sites. */
+export function suggestedSources(title: string): SearchSource[] {
+  const t = title.toLowerCase();
+  if (/\b(ai|ml|machine learning|data|deep learning|nlp|llm|analytics?)\b/.test(t)) return ['linkedin', 'github', 'kaggle'];
+  if (/\b(developer|engineer|programmer|frontend|front-end|backend|back-end|full[- ]?stack|software|devops|mobile|web)\b/.test(t)) {
+    return ['linkedin', 'github', 'stackoverflow'];
+  }
+  return ['linkedin'];
+}
+
+/** All sources with their suggested query, and whether each is suggested for this job. */
+export function suggestSearches(job: JobForSearch) {
+  const suggested = suggestedSources(job.title);
+  return SEARCH_SOURCES.map((source) => ({
+    source,
+    label: SOURCE_LABELS[source],
+    query: buildSearchQuery(job, source),
+    suggested: suggested.includes(source),
+  }));
 }
 
 /** Strips the " | LinkedIn" ending and splits "Name - Role - Company" into parts. */
@@ -125,32 +182,95 @@ function titleParts(title: string): string[] {
     .filter((p) => p && p !== '...' && p !== '…');
 }
 
+/** GitHub / Kaggle paths that are NOT a person (site pages, datasets, ...). */
+const GITHUB_RESERVED = new Set(['orgs', 'topics', 'features', 'about', 'pricing', 'marketplace', 'sponsors', 'collections', 'events', 'trending', 'search', 'enterprise', 'login', 'join', 'settings', 'apps', 'site', 'security', 'customer-stories', 'readme', 'explore']);
+const KAGGLE_RESERVED = new Set(['datasets', 'competitions', 'code', 'discussions', 'discussion', 'models', 'learn', 'docs', 'c', 'search', 'organizations', 'benchmarks', 'notebooks', 'rankings', 'kernels', 'general', 'product-feedback', 'getting-started']);
+
+/** A person's name from a title part: letters only, 2-60 characters, not a "jobs"/"top 10" page. */
+function cleanName(text: string | undefined): string | null {
+  const name = (text ?? '').replace(/[^\p{L}\p{M}\s.'-]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (name.length < 2 || name.length > 60 || /\b(jobs?|hiring|profiles?|people|top \d+|user)\b/i.test(name)) return null;
+  return name;
+}
+
+/**
+ * Which site a link is on, and its canonical profile link, if it's a PERSON's profile page.
+ * Shapes taken from real Google results (see the comment at the top).
+ */
+function profileOf(link: string): { site: SearchSource | 'sample'; url: string; user?: string } | null {
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  const parts = url.pathname.split('/').filter(Boolean);
+  // LinkedIn: /in/<name>, on any country subdomain (bd., uk., ...).
+  if (/(^|\.)linkedin\.com$/.test(host)) return parts[0] === 'in' && parts[1] ? { site: 'linkedin', url: `https://www.linkedin.com/in/${parts[1]}` } : null;
+  // GitHub: /<user>, or /<user>/<user> (the profile README repo). /<user>/<repo> is a project.
+  if (host === 'github.com') {
+    const user = parts[0];
+    if (!user || GITHUB_RESERVED.has(user.toLowerCase())) return null;
+    if (parts.length === 1 || (parts.length === 2 && parts[1]!.toLowerCase() === user.toLowerCase())) {
+      return { site: 'github', url: `https://github.com/${user}`, user };
+    }
+    return null;
+  }
+  // Stack Overflow: /users/<id>/<name> or /users/<name> (also on meta.), not the "story" pages.
+  if (host === 'stackoverflow.com' || host === 'meta.stackoverflow.com') {
+    if (parts[0] !== 'users' || !parts[1] || parts[1] === 'story') return null;
+    return { site: 'stackoverflow', url: `https://${host}/${parts.slice(0, 3).join('/')}` };
+  }
+  // Kaggle: /<user> (also /<user>/followers etc.), not datasets / competitions / ...
+  if (host === 'kaggle.com' || host === 'www.kaggle.com') {
+    const user = parts[0];
+    if (!user || KAGGLE_RESERVED.has(user.toLowerCase())) return null;
+    return { site: 'kaggle', url: `https://www.kaggle.com/${user}`, user };
+  }
+  if (host === 'example.com' && parts[0] === 'sample-profile') return { site: 'sample', url: `${url.origin}${url.pathname}` };
+  return null;
+}
+
 /**
  * One search result -> a new candidate, or null if it isn't a person's profile.
  * Only uses what Google shows: never invents an email or anything else.
  */
 export function resultToCandidate(result: SearchResult): NewCandidate | null {
-  const [first, ...rest] = titleParts(result.title);
-  // A person's name: 2-60 characters, no digits or obvious non-name words.
-  const name = (first ?? '').replace(/[^\p{L}\p{M}\s.'-]/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (name.length < 2 || name.length > 60 || /\b(jobs?|hiring|profiles?|people|top \d+)\b/i.test(name)) return null;
-  // LinkedIn profile pages only ("/in/..."), on any country subdomain (bd., uk., ...).
-  // (Sample mode uses example.com links, which are allowed.)
-  let url: URL;
-  try {
-    url = new URL(result.link);
-  } catch {
-    return null;
-  }
-  const isProfile = /(^|\.)linkedin\.com$/i.test(url.hostname) ? /^\/in\/[^/]+/.test(url.pathname) : url.hostname === 'example.com';
-  if (!isProfile) return null;
+  const profile = profileOf(result.link);
+  if (!profile) return null;
 
-  const headline = rest.join(' · ').slice(0, 300) || null;
+  let name: string | null;
+  let headline: string | null = null;
+  if (profile.site === 'github') {
+    // "Tahsin Zaman Tahsin0909" (name + username), "Md-Kais" (username only), or for a
+    // profile README "Ujjal Kumar Roy - Full-Stack Software Engineer".
+    const [first, ...rest] = titleParts(result.title.replace(/\s*·\s*GitHub.*$/i, ''));
+    const withoutUser = (first ?? '').replace(new RegExp(`\\s*${profile.user!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i'), '');
+    name = cleanName(withoutUser) ?? cleanName(profile.user);
+    headline = rest.join(' · ') || null;
+  } else if (profile.site === 'stackoverflow') {
+    // "User Mohammad Faisal" / "User Mushfiq - Meta Stack Overflow"
+    name = cleanName(result.title.replace(/^User\s+/i, '').replace(/\s*-\s*(Meta\s+)?Stack Overflow.*$/i, ''));
+  } else if (profile.site === 'kaggle') {
+    // "Arif Miah" / "Arif Miah | Expert | Kaggle"
+    const [first, ...rest] = titleParts(result.title.replace(/\s*\|\s*Kaggle\s*$/i, ''));
+    name = cleanName(first);
+    headline = rest.join(' · ') || null;
+  } else {
+    // LinkedIn (and sample): "Name - Role - Company | LinkedIn"
+    const [first, ...rest] = titleParts(result.title);
+    name = cleanName(first);
+    headline = rest.join(' · ') || null;
+  }
+  if (!name) return null;
+  headline = headline?.slice(0, 300) || null;
+
   const snippet = result.snippet.replace(/\s+/g, ' ').trim();
   return {
     name,
     email: null,
-    profileUrl: `${url.origin}${url.pathname}`.replace(/\/$/, ''),
+    profileUrl: profile.url,
     headline,
     location: null,
     // What the AI scores: Google's snippet, plus the headline (often holds the key skills).

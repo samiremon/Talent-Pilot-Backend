@@ -76,4 +76,14 @@ describe('chat agent: AI calls per message', () => {
     expect(result.actionIds).toHaveLength(0);
     expect(result.reply).toMatch(/Which one\?/);
   });
+
+  it('proposes a web search with the sites that fit the job, in one call', async () => {
+    const { job, userId } = await setup();
+    await JobModel.updateOne({ _id: job._id }, { $set: { title: 'React Developer', mustHaveSkills: ['React', 'TypeScript'] } });
+    const { ai, seen } = scriptedAi([call('propose_find_candidates', {})]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'find candidates' });
+    expect(seen).toHaveLength(1);
+    expect(result.actionIds).toHaveLength(1);
+    expect(result.reply).toMatch(/^Here's a card to search LinkedIn, GitHub, Stack Overflow for JOB-0001 "React Developer" \(up to 30 profiles, 3 searches\)/);
+  });
 });

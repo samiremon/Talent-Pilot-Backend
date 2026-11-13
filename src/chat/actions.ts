@@ -14,6 +14,8 @@ import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
 import { addManualCandidate } from '../sourcing/manual.js';
 import { deleteCandidate } from '../candidates/deleteCandidate.js';
+import { SOURCE_LABELS, type SearchSource } from '../sourcing/search.js';
+import { startSourcing } from '../sourcing/webSourcing.js';
 import { startScoring, type SourcingDeps } from '../sourcing/service.js';
 import { ActivityModel } from '../models/activity.js';
 import { PendingActionModel, type ActionType } from '../models/chat.js';
@@ -135,6 +137,18 @@ export async function confirmAction(
         // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
         const payload = action.payload as { jobId: string; candidateId: string };
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
+        break;
+      }
+      case 'find_candidates': {
+        // payload = { jobId, jobCode, title, searches: [{ source, label, query, checked }], pages }.
+        // The recruiter may have ticked other sites or edited the search words on the card.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; jobCode?: string; searches: { source: SearchSource; query: string; checked?: boolean }[]; pages: number };
+        const chosen = (edits?.searches as typeof payload.searches | undefined) ?? payload.searches;
+        const pages = Number(edits?.pages ?? payload.pages) || 1;
+        const searches = chosen.filter((s) => s.checked !== false).map((s) => ({ source: s.source, query: String(s.query ?? '') }));
+        const task = await startSourcing(deps, payload.jobId, userId, { searches, pages, actor: 'ai' });
+        result = { jobId: payload.jobId, jobCode: payload.jobCode, taskId: task.id, sources: searches.map((s) => SOURCE_LABELS[s.source]) };
         break;
       }
       default:

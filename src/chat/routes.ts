@@ -84,6 +84,8 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'find_candidates'
+              ? `Done: searching ${((card.result as { sources?: string[] } | null)?.sources ?? []).join(', ')} for ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}. New people are scored automatically; I'll post the best matches here when that's done.`
             : card.type === 'import_csv'
               ? `Done: imported ${imported?.added ?? 0} candidate(s)${imported?.duplicates ? `, skipped ${imported.duplicates} duplicate(s)` : ''}.${imported?.taskId ? ' AI scoring has started: you can follow it on the card above or on the job page.' : ''}`
               : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;

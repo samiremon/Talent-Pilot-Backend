@@ -31,6 +31,7 @@ import { planCandidates } from '../candidates/addCandidates.js';
 import { candidateRanks, getJob, listCandidates, resolveJob, updateJobInput } from '../jobs/service.js';
 import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
+import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
 import { jobCode } from '../models/counter.js';
 import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
@@ -46,7 +47,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time).
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically) or remove one, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): web search for candidates, emails, replies, meetings, status changes.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically) or remove one, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -387,6 +388,44 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             location: z.string().optional(),
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
+        }),
+      },
+    ),
+    tool(
+      async ({ job, sources, resultsPerSource }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job to find candidates for (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        // Suggested queries come from the job (no AI); the recruiter's choice of sites wins.
+        const all = suggestSearches(found);
+        const chosen = sources?.length ? sources : all.filter((s) => s.suggested).map((s) => s.source);
+        const searches = all.map((s) => ({ ...s, checked: chosen.includes(s.source) }));
+        const pages = Math.min(MAX_PAGES, Math.max(1, Math.round((resultsPerSource ?? 10) / RESULTS_PER_PAGE)));
+        const code = jobCode(found.jobNumber);
+        const action = await proposeAction(userId, 'find_candidates', { jobId: String(found._id), jobCode: code, title: found.title, searches, pages });
+        actionIds.push(String(action._id));
+        const labels = searches.filter((s) => s.checked).map((s) => s.label);
+        cardIntros.push(
+          `Here's a card to search ${labels.join(', ')} for ${code} "${found.title}" (up to ${labels.length * pages * RESULTS_PER_PAGE} profiles, ${labels.length * pages} search${labels.length * pages === 1 ? '' : 'es'}). You can change the sites and search words on the card.`,
+        );
+        return `A "Find candidates" card for ${code} (${labels.join(', ')}) is now shown with Confirm/Cancel. Nothing is searched until the recruiter presses Confirm; new people are then scored automatically.`;
+      },
+      {
+        name: 'propose_find_candidates',
+        description:
+          'Propose a web search for new candidates for a job (Google results from LinkedIn, GitHub, Stack Overflow, Kaggle). Shows the recruiter a card with the suggested search words per site to confirm. Use when the recruiter asks to find/source/search for candidates.',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          sources: z
+            .array(z.enum(SEARCH_SOURCES))
+            .optional()
+            .describe('Only if the recruiter named sites; otherwise leave empty and the sites that fit the job are suggested'),
+          resultsPerSource: z.number().int().optional().describe('Results per site if the recruiter said how many: 10, 20 or 30. Default 10.'),
         }),
       },
     ),

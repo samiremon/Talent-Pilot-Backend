@@ -37,6 +37,9 @@ const taskSchema = new Schema(
     message: { type: String, default: 'Waiting to start…' },
     error: { type: String, default: null },
     attempts: { type: Number, default: 0 },
+    // What the task produced, e.g. the ids of the people a web search added (so the chat
+    // can report how they scored).
+    result: { type: Schema.Types.Mixed, default: null },
     startedAt: { type: Date, default: null },
     finishedAt: { type: Date, default: null },
   },

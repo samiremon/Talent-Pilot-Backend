@@ -1,7 +1,8 @@
 /**
  * "How did they score?" message in the chat, after AI scoring finishes.
  *
- * When the recruiter confirms an "Add candidate" (or "Import CSV") card, scoring runs in
+ * When the recruiter confirms an "Add candidate", "Import CSV" or "Find candidates" card, the
+ * work (web search, then) scoring runs in
  * the background and takes a few seconds, so the first reply can only say "scoring has
  * started". When the card sees the scoring task finish, it calls
  * POST /chat/actions/:id/follow-up and the AI posts the result:
@@ -34,6 +35,10 @@ interface FollowUpResult {
   candidateId?: string | null;
   candidateIds?: string[];
   name?: string;
+  /** Web search only: the sites searched, how many profiles were found, or why it failed. */
+  sources?: string[];
+  found?: number;
+  searchFailed?: string;
   /** Set once the follow-up message was posted (so it's never posted twice). */
   followUpMessageId?: string;
 }
@@ -41,7 +46,7 @@ interface FollowUpResult {
 export async function postScoringFollowUp(actionId: string, userId: string) {
   const action = await PendingActionModel.findOne({ _id: parseId(actionId, 'Card'), userId: new Types.ObjectId(userId) });
   if (!action) throw AppError.notFound('Card not found');
-  if (action.status !== 'confirmed' || (action.type !== 'add_candidate' && action.type !== 'import_csv')) {
+  if (action.status !== 'confirmed' || !['add_candidate', 'import_csv', 'find_candidates'].includes(action.type)) {
     throw new AppError(400, 'NO_FOLLOW_UP', 'This card has no scoring result to report.');
   }
   const result = (action.result ?? {}) as FollowUpResult;
@@ -52,12 +57,25 @@ export async function postScoringFollowUp(actionId: string, userId: string) {
     if (existing) return (await presentMessages([existing]))[0];
   }
 
-  // Scoring still going? Then there's nothing to report yet.
-  if (result.taskId) {
-    const task = await TaskModel.findById(result.taskId).lean();
-    if (task && (task.status === 'queued' || task.status === 'running')) {
-      throw new AppError(409, 'SCORING_NOT_DONE', 'Scoring is still running.');
-    }
+  // Still working? Then there's nothing to report yet.
+  const task = result.taskId ? await TaskModel.findById(result.taskId).lean() : null;
+  if (task && (task.status === 'queued' || task.status === 'running')) {
+    throw new AppError(409, 'SCORING_NOT_DONE', 'Still working.');
+  }
+  if (action.type === 'find_candidates' && task) {
+    // The web search queues scoring when it finishes: wait for that too.
+    const scoring = await TaskModel.exists({
+      jobId: task.jobId,
+      type: 'score_candidates',
+      status: { $in: ['queued', 'running'] },
+      createdAt: { $gte: task.createdAt },
+    });
+    if (scoring) throw new AppError(409, 'SCORING_NOT_DONE', 'Scoring is still running.');
+    // The people the search added (kept on the search task).
+    const taskResult = (task.result ?? {}) as { candidateIds?: string[]; found?: number };
+    result.candidateIds = taskResult.candidateIds ?? [];
+    result.found = taskResult.found ?? 0;
+    result.searchFailed = task.status === 'failed' ? (task.error ?? 'unknown problem') : undefined;
   }
 
   const jobId = result.jobId!;
@@ -66,7 +84,12 @@ export async function postScoringFollowUp(actionId: string, userId: string) {
   const code = jobCode((job as { jobNumber?: number | null }).jobNumber) ?? 'the job';
   const { ranks, total } = await candidateRanks(job._id);
 
-  const text = action.type === 'add_candidate' ? await oneCandidateText(result, ranks, total, code) : await importText(result, ranks, total, code);
+  const text =
+    action.type === 'add_candidate'
+      ? await oneCandidateText(result, ranks, total, code)
+      : action.type === 'find_candidates'
+        ? await searchText(result, ranks, total, code)
+        : await importText(result, ranks, total, code);
 
   const message = await addSystemNote(userId, text, jobId);
   action.set({ result: { ...result, followUpMessageId: message!.id } });
@@ -110,5 +133,29 @@ async function importText(result: FollowUpResult, ranks: Map<string, number>, to
     );
   }
   if (unscored) lines.push(`${unscored} couldn't be scored (not enough information, or the AI didn't return a result).`);
+  return lines.join('\n\n');
+}
+
+/** "The web search on LinkedIn, GitHub found 24 profiles: 19 new. Best new matches: …" */
+async function searchText(result: FollowUpResult, ranks: Map<string, number>, total: number, code: string) {
+  const where = (result.sources ?? []).join(', ') || 'the web';
+  if (result.searchFailed) return `The web search on ${where} for ${code} didn't work: ${result.searchFailed}`;
+  const ids = result.candidateIds ?? [];
+  if (!result.found) return `The web search on ${where} found no matching profiles for ${code}. Try fewer or different search words on a new search.`;
+  if (!ids.length) return `The web search on ${where} found ${result.found} profiles for ${code}, but they're all already in this job.`;
+  const people = await CandidateModel.find({ _id: { $in: ids } }, { name: 1, score: 1 }).lean();
+  const scored = people.filter((p) => p.score !== null && p.score !== undefined).sort((a, b) => b.score! - a.score!);
+  const lines = [`The web search on ${where} found ${result.found} profile${result.found === 1 ? '' : 's'} for ${code}: ${people.length} new (${total} scored in this job now).`];
+  if (scored.length) {
+    lines.push(
+      `Best new matches:\n${scored
+        .slice(0, TOP_NEW)
+        .map((p) => `- **${p.name}**: ${p.score}/100, rank #${ranks.get(String(p._id))} of ${total}`)
+        .join('\n')}`,
+    );
+  }
+  const unscored = people.length - scored.length;
+  if (unscored) lines.push(`${unscored} couldn't be scored (not enough information in the search result).`);
+  lines.push('Search results are short, so check the best ones before reaching out.');
   return lines.join('\n\n');
 }

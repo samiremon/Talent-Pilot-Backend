@@ -19,7 +19,7 @@ import { AppError, asyncHandler } from '../errors.js';
 import { resolveJob } from '../jobs/service.js';
 import { listTasks } from '../tasks/service.js';
 import { manualCandidateInput, addManualCandidate } from './manual.js';
-import { buildSearchQuery, MAX_PAGES, RESULTS_PER_PAGE } from './search.js';
+import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from './search.js';
 import { startSourcing } from './webSourcing.js';
 import { importCsv, startScoring as startScoringFn, type SourcingDeps } from './service.js';
 
@@ -38,7 +38,11 @@ const upload = multer({
 });
 
 const sourceBody = z.object({
-  query: z.string().trim().min(3).max(300).optional(),
+  searches: z
+    .array(z.object({ source: z.enum(SEARCH_SOURCES), query: z.string().trim().min(3).max(300) }))
+    .min(1, 'choose at least one source')
+    .max(SEARCH_SOURCES.length)
+    .optional(),
   pages: z.coerce.number().int().min(1).max(MAX_PAGES).default(1),
 });
 
@@ -73,14 +77,14 @@ export function sourcingRouter(deps: SourcingDeps): Router {
     }),
   );
 
-  // "Find candidates on the web": the suggested Google query for this job (no AI used),
-  // so the recruiter can check/edit it before searching.
+  // "Find candidates on the web": one suggested Google query per source (LinkedIn, GitHub,
+  // ...), and which sources fit this job. No AI used. The recruiter checks/edits them first.
   router.get(
     '/:id/source',
     asyncHandler(async (req, res) => {
       const job = await resolveJob(req.params.id as string);
       res.json({
-        query: buildSearchQuery(job),
+        sources: suggestSearches(job),
         mode: deps.searchMode ?? 'sample',
         maxPages: MAX_PAGES,
         resultsPerPage: RESULTS_PER_PAGE,
@@ -95,7 +99,8 @@ export function sourcingRouter(deps: SourcingDeps): Router {
       const job = await resolveJob(req.params.id as string);
       const body = sourceBody.parse(req.body);
       const task = await startSourcing(deps, String(job._id), req.user!.id, {
-        query: body.query ?? buildSearchQuery(job),
+        // Nothing chosen: the suggested sources with their suggested queries.
+        searches: body.searches ?? suggestSearches(job).filter((s) => s.suggested),
         pages: body.pages,
       });
       res.status(202).json({ task });
