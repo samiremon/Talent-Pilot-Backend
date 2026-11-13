@@ -47,7 +47,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time).
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically) or remove one, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -389,6 +389,32 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
         }),
+      },
+    ),
+    tool(
+      async ({ job }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job to clear (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const count = await CandidateModel.countDocuments({ jobId: found._id });
+        if (count === 0) return `${code} has no candidates, so there's nothing to delete.`;
+        const action = await proposeAction(userId, 'delete_all_candidates', { jobId: String(found._id), jobCode: code, title: found.title, count });
+        actionIds.push(String(action._id));
+        deleteProposed = true;
+        cardIntros.push(`Here's a card to delete all ${count} candidate${count === 1 ? '' : 's'} of ${code} "${found.title}". The job itself stays.`);
+        return `A red "Delete all candidates" card for ${code} (${count} people) is now shown with Confirm/Cancel. Nothing is deleted until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_delete_all_candidates',
+        description:
+          'Propose deleting ALL candidates of one job (the job itself stays). Shows the recruiter a red confirmation card. Only use when the recruiter clearly asks to delete/remove/clear all candidates of a job.',
+        schema: z.object({ job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.') }),
       },
     ),
     tool(

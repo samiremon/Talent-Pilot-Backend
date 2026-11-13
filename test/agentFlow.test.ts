@@ -86,4 +86,15 @@ describe('chat agent: AI calls per message', () => {
     expect(result.actionIds).toHaveLength(1);
     expect(result.reply).toMatch(/^Here's a card to search LinkedIn, GitHub, Stack Overflow for JOB-0001 "React Developer" \(up to 30 profiles, 3 searches\)/);
   });
+
+  it('proposes deleting all candidates of the open job in one call, with a red card', async () => {
+    const { job, userId } = await setup();
+    const { ai, seen } = scriptedAi([call('propose_delete_all_candidates', {})]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'delete all candidates' });
+    expect(seen).toHaveLength(1);
+    expect(result.actionIds).toHaveLength(1);
+    expect(result.reply).toBe(`Here's a card to delete all 3 candidates of JOB-0001 "Dev". The job itself stays.\n\n${DELETE_CARD_FOOTER}`);
+    expect(await CandidateModel.countDocuments({ jobId: job._id })).toBe(3); // nothing deleted yet
+  });
 });
+

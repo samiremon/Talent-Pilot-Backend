@@ -13,7 +13,7 @@ import { AppError } from '../errors.js';
 import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js';
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
 import { addManualCandidate } from '../sourcing/manual.js';
-import { deleteCandidate } from '../candidates/deleteCandidate.js';
+import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { SOURCE_LABELS, type SearchSource } from '../sourcing/search.js';
 import { startSourcing } from '../sourcing/webSourcing.js';
 import { startScoring, type SourcingDeps } from '../sourcing/service.js';
@@ -137,6 +137,12 @@ export async function confirmAction(
         // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
         const payload = action.payload as { jobId: string; candidateId: string };
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
+        break;
+      }
+      case 'delete_all_candidates': {
+        // payload = { jobId, jobCode, title, count }. Same function as the "Delete all" button.
+        const payload = action.payload as { jobId: string };
+        result = await deleteAllCandidates(payload.jobId, { userId, actor: 'ai' });
         break;
       }
       case 'score_candidates': {

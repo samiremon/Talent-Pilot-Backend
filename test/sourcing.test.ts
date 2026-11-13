@@ -450,6 +450,20 @@ describe('removing a candidate', () => {
     expect(JSON.stringify(activity)).toMatch(/Removed all 2 candidates/);
   });
 
+  it('removes all candidates from the AI card after Confirm', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    await agent.post(`/jobs/${job.id}/candidates`).send(PERSON).expect(201);
+    await queue.idle();
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { proposeAction } = await import('../src/chat/actions.js');
+    const card = await proposeAction(String(user!._id), 'delete_all_candidates', { jobId: job.id, jobCode: job.jobCode, title: job.title, count: 1 });
+    const res = await agent.post(`/chat/actions/${card._id}/confirm`).send({}).expect(200);
+    expect(res.body.message.text).toBe('Done: removed all 1 candidate(s) from JOB-0001. The job itself is still there.');
+    expect(await CandidateModel.countDocuments({ jobId: job.id })).toBe(0);
+  });
+
   it('works from the AI card after Confirm', async () => {
     const { app, queue } = makeApp();
     const agent = await loggedIn(app);
