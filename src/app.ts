@@ -14,6 +14,7 @@ import { pinoHttp } from 'pino-http';
 import { createAi, type Ai } from './ai/client.js';
 import { aiRouter } from './ai/routes.js';
 import { requireAuth } from './auth/requireAuth.js';
+import { chatRouter } from './chat/routes.js';
 import { authRouter, type AuthOptions } from './auth/routes.js';
 import { jobsRouter, statsRouter } from './jobs/routes.js';
 import { isDatabaseReady } from './db.js';
@@ -107,6 +108,7 @@ export function createApp({
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
+  app.use('/chat', requireAuth, chatRouter(ai));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.
   app.use(notFoundHandler);
