@@ -70,3 +70,33 @@ The server refuses to start if a setting is invalid or MongoDB can't be reached.
   shows a "Use demo account" button that fills in the recruiter's email and password from `.env`,
   served by `GET /auth/demo`. Anyone who can open the site can then log in, so set it to
   `false` for real use; the endpoint then returns 404 and the button disappears.
+
+## Accounts
+
+- **Sign up** with name, email and password. The email is checked for format **and** that its
+  domain really exists and accepts mail (`rahim@gmial.com` → "Did you mean gmail.com?").
+- **Forgot password** emails a one-time link (valid 30 minutes). In the demo, emails land in
+  **Mailpit**: <http://localhost:8025>. Set `SMTP_*` in `.env` to send real email.
+- **Profile** (account menu → Profile): change your name or password. Changing the password
+  logs you out on your other devices.
+- All recruiters share one team workspace; each has a private chat. Every action and every AI
+  call is recorded with the person's name (sidebar → **Activity**: activity log, token usage,
+  token dashboard).
+
+### Turning on "Continue with Google" (optional, ~3 minutes)
+
+1. Open <https://console.cloud.google.com/apis/credentials> (create a project if asked).
+2. If asked, set up the **OAuth consent screen**: External, app name "TalentPilot", your email;
+   add yourself as a test user.
+3. **Create credentials → OAuth client ID → Web application**, and add these
+   **Authorized redirect URIs**:
+   - `http://localhost:8080/api/auth/google/callback` (Docker)
+   - `http://localhost:5173/api/auth/google/callback` (`npm run dev`)
+4. Copy the client ID and secret into `.env`:
+   ```
+   GOOGLE_CLIENT_ID=...apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...
+   ```
+5. Restart (`docker compose up -d api`). The **Continue with Google** button appears on the
+   login and sign-up pages.
+
