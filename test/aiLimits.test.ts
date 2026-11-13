@@ -44,18 +44,27 @@ describe('Groq rate limits', () => {
     expect(snap).toMatchObject({ limitRequests: 1000, remainingRequests: 992, limitTokens: 8000, remainingTokens: 7923 });
   });
 
-  it('shows % left per model, and a full window once the reset time has passed', async () => {
+  it('shows % left per model, rounded down, and refills the bucket over time', async () => {
     const now = new Date('2026-11-13T12:00:00Z');
-    await recordRateLimits('openai/gpt-oss-120b', groqHeaders(250), now);
-    await recordRateLimits('openai/gpt-oss-20b', groqHeaders(10, '1s'), new Date(now.getTime() - 60_000)); // reset long passed
+    await recordRateLimits('openai/gpt-oss-120b', groqHeaders(997), now);
+    // 20b: 990 left, as Groq said 10 minutes ago -> about 7 requests have come back since.
+    await recordRateLimits('openai/gpt-oss-20b', groqHeaders(990), new Date(now.getTime() - 10 * 60_000));
+    await AiUsageModel.insertMany(
+      Array.from({ length: 25 }, () => ({ task: 'chat', role: 'agent', model: 'openai/gpt-oss-120b', inputTokens: 1, outputTokens: 1, createdAt: new Date(now.getTime() - 3_600_000) })),
+    );
 
     const result = await aiLimits(AI, {}, now);
     const big = result.models.find((m) => m.model === 'openai/gpt-oss-120b')!;
     const small = result.models.find((m) => m.model === 'openai/gpt-oss-20b')!;
-    expect(big.requestsToday).toMatchObject({ limit: 1000, remaining: 250, percentLeft: 25 });
+    // 997 of 1000 is 99.7%: shown as 99%, never "100%" while something is used.
+    expect(big.requestsToday).toMatchObject({ limit: 1000, remaining: 997, percentLeft: 99, refillSeconds: 86 });
+    expect(big.callsLast24h).toBe(25);
     expect(big.usedBy).toEqual(['agent']);
     expect(small.usedBy).toEqual(['bulk', 'safety']); // one entry per model, all its roles
-    expect(small.requestsToday).toMatchObject({ remaining: 1000, percentLeft: 100 }); // refilled
+    // 10 minutes = 600 s / 86.4 s per request = 6 requests refilled.
+    expect(small.requestsToday.remaining).toBe(996);
+    // Tokens per minute: a minute later the bucket is full again.
+    expect(small.tokensPerMinute).toMatchObject({ remaining: 8000, percentLeft: 100 });
   });
 
   it('counts tokens left today and in your own week/month budgets', async () => {

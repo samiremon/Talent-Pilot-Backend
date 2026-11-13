@@ -170,21 +170,21 @@ export async function aiLimits(ai: Pick<Ai, 'mode' | 'models'>, settings: LimitS
   const models = await Promise.all(
     [...roles.entries()].map(async ([modelName, usedBy]) => {
       const snap = snapshots.get(modelName);
-      // If the reset time has passed since Groq last told us, the window has refilled.
-      const requestsLeft =
-        snap?.limitRequests == null
-          ? null
-          : snap.resetRequestsAt && snap.resetRequestsAt <= now
-            ? snap.limitRequests
-            : (snap.remainingRequests ?? null);
-      const tokensLeft =
-        snap?.limitTokens == null
-          ? null
-          : snap.resetTokensAt && snap.resetTokensAt <= now
-            ? snap.limitTokens
-            : (snap.remainingTokens ?? null);
+      // Groq's limits are REFILLING BUCKETS, not counters that reset at midnight:
+      //   1,000 requests per day   = 1 request given back every 86.4 s
+      //   8,000 tokens per minute  = 8,000 tokens given back over each minute
+      // Groq tells us how much was left at the moment of our last call; since then the
+      // bucket has kept refilling, so we add back what has refilled (never above the limit).
+      const refill = (limit: number | null | undefined, remaining: number | null | undefined, windowMs: number) => {
+        if (limit == null || remaining == null) return null;
+        const elapsed = snap?.updatedAt ? now.getTime() - new Date(snap.updatedAt).getTime() : 0;
+        return Math.min(limit, remaining + Math.floor((elapsed * limit) / windowMs));
+      };
+      const requestsLeft = refill(snap?.limitRequests, snap?.remainingRequests, 24 * 60 * 60 * 1000);
+      const tokensLeft = refill(snap?.limitTokens, snap?.remainingTokens, 60 * 1000);
+      // Rounded DOWN, so it never says "100% left" while something is used (997/1000 -> 99%).
       const pct = (left: number | null, limit: number | null | undefined) =>
-        left === null || !limit ? null : Math.round((left / limit) * 100);
+        left === null || !limit ? null : Math.floor((left / limit) * 100);
 
       return {
         model: modelName,
@@ -194,14 +194,17 @@ export async function aiLimits(ai: Pick<Ai, 'mode' | 'models'>, settings: LimitS
           limit: snap?.limitRequests ?? null,
           remaining: requestsLeft,
           percentLeft: pct(requestsLeft, snap?.limitRequests),
-          resetsAt: snap?.resetRequestsAt ?? null,
+          // How fast used requests come back (e.g. "1 every 86 s" for 1,000/day).
+          refillSeconds: snap?.limitRequests ? Math.round(86_400 / snap.limitRequests) : null,
         },
         tokensPerMinute: {
           limit: snap?.limitTokens ?? null,
           remaining: tokensLeft,
           percentLeft: pct(tokensLeft, snap?.limitTokens),
-          resetsAt: snap?.resetTokensAt ?? null,
         },
+        // Our own count of AI calls to this model in the last 24 hours (from the token log),
+        // so the recruiter sees real usage next to Groq's refilling bucket.
+        callsLast24h: await AiUsageModel.countDocuments({ model: modelName, createdAt: { $gte: day } }),
         tokensToday: meter(await tokensSince(day, modelName), settings.dailyTokens),
       };
     }),
