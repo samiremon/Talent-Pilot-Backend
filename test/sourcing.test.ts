@@ -388,7 +388,7 @@ describe('adding one candidate by hand', () => {
 });
 
 describe('ranking', () => {
-  it('ranks by score, best first; equal scores share a rank; unscored have none', async () => {
+  it('ranks by score 1, 2, 3, 4 (no shared ranks: equal scores by who was added first); unscored have none', async () => {
     const { candidateRanks } = await import('../src/jobs/service.js');
     const jobId = new Types.ObjectId();
     const people = [
@@ -403,7 +403,7 @@ describe('ranking', () => {
     );
     const { ranks, total } = await candidateRanks(jobId);
     expect(total).toBe(4);
-    expect(docs.map((d) => ranks.get(String(d._id)) ?? null)).toEqual([1, 2, 2, 4, null]);
+    expect(docs.map((d) => ranks.get(String(d._id)) ?? null)).toEqual([1, 2, 3, 4, null]); // B and C both 80: B was added first
   });
 });
 

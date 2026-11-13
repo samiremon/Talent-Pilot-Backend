@@ -85,7 +85,7 @@ export async function listCandidates(jobId: string) {
   const id = parseId(jobId);
   if (!(await JobModel.exists({ _id: id }))) throw AppError.notFound('Job not found');
   // Best score first; unscored candidates (null) after the scored ones.
-  const rows = await CandidateModel.find({ jobId: id }).sort({ score: -1, createdAt: 1 }).lean();
+  const rows = await CandidateModel.find({ jobId: id }).sort({ score: -1, createdAt: 1, _id: 1 }).lean();
   return rows.map(({ _id, __v, jobId: job, ...rest }) => {
     void __v;
     return {
@@ -99,20 +99,18 @@ export async function listCandidates(jobId: string) {
 }
 
 /**
- * Ranking of a job's candidates by AI score: #1 = best score.
- * Same score = same rank (two people on 80 are both #3, the next one is #5), like a
- * sports table. Only scored candidates are ranked; unscored ones have no rank yet.
- * The job page computes the same ranks, so the chat and the table always agree.
+ * Ranking of a job's candidates by AI score: #1 = best score, then 2, 3, 4, ... with NO
+ * shared ranks. People with the same score are ordered by who was added first (the same
+ * order as the candidates list). Only scored candidates are ranked; unscored ones have no
+ * rank yet. The job page computes the same ranks, so the chat and the table always agree.
  * Returns candidateId -> rank, plus how many candidates are ranked.
  */
 export async function candidateRanks(jobId: string | Types.ObjectId) {
-  const scored = await CandidateModel.find({ jobId, score: { $ne: null } }, { score: 1 }).sort({ score: -1 }).lean();
+  const scored = await CandidateModel.find({ jobId, score: { $ne: null } }, { score: 1, createdAt: 1 })
+    .sort({ score: -1, createdAt: 1, _id: 1 })
+    .lean();
   const ranks = new Map<string, number>();
-  scored.forEach((c, index) => {
-    const previous = scored[index - 1];
-    // Same score as the one above: share their rank. Otherwise rank = position (1-based).
-    ranks.set(String(c._id), previous && previous.score === c.score ? ranks.get(String(previous._id))! : index + 1);
-  });
+  scored.forEach((c, index) => ranks.set(String(c._id), index + 1));
   return { ranks, total: scored.length };
 }
 
