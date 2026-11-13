@@ -8,6 +8,12 @@
  *
  * All recruiters share one team workspace (jobs, candidates, activity); each has their
  * own private chat. Their name is shown on everything they do.
+ *
+ * EMAIL VERIFICATION: a sign-up with email + password starts UNVERIFIED. We email a
+ * 6-digit code; the account can't log in until the code is entered. That's the only way to
+ * be sure the mailbox is real and belongs to the person (a fake address never gets the
+ * code). Unverified sign-ups delete themselves after 24 hours (TTL index below).
+ * Google accounts are verified by Google; the seeded demo account is verified by default.
  */
 import { Schema, model, type InferSchemaType } from 'mongoose';
 
@@ -22,10 +28,24 @@ const userSchema = new Schema(
     passwordHash: { type: String, default: null, select: false },
     // Google's permanent id for this person ("sub"), when they use Continue with Google.
     googleId: { type: String, default: null },
+
+    // --- Email verification ---
+    // Missing on older accounts = treated as verified.
+    emailVerified: { type: Boolean, default: true },
+    // Only set while unverified: MongoDB deletes the account at this time if still unverified.
+    unverifiedExpiresAt: { type: Date, default: undefined },
+    // The current 6-digit code, hashed (never stored as-is), when it expires, and how many
+    // wrong guesses were made (max 5, then a new code is needed).
+    verifyCodeHash: { type: String, default: null, select: false },
+    verifyCodeExpiresAt: { type: Date, default: null, select: false },
+    verifyAttempts: { type: Number, default: 0, select: false },
   },
   // Adds createdAt / updatedAt automatically.
   { timestamps: true },
 );
+
+// Unverified sign-ups clean themselves up (rows without the field are never deleted).
+userSchema.index({ unverifiedExpiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // One account per Google id (only rows that have one).
 userSchema.index({ googleId: 1 }, { unique: true, partialFilterExpression: { googleId: { $type: 'string' } } });

@@ -2,7 +2,9 @@
  * Account endpoints:
  *
  *   GET   /auth/providers          which sign-in options are on (Google? sign-up?)
- *   POST  /auth/signup             { name, email, password } -> new account, logged in
+ *   POST  /auth/signup             { name, email, password } -> account created, code emailed
+ *   POST  /auth/verify-email       { email, code } -> account verified, logged in
+ *   POST  /auth/resend-verification { email } -> a new code (same answer either way)
  *   POST  /auth/login              { email, password } -> sets the session cookie
  *   POST  /auth/logout             deletes the session, clears the cookie
  *   GET   /auth/me                 the logged-in user, or 401
@@ -25,6 +27,8 @@ import { UserModel, toPublicUser } from '../models/user.js';
 import {
   changePassword,
   isResetTokenValid,
+  resendVerification,
+  verifyEmail,
   passwordRule,
   requestPasswordReset,
   resetPassword,
@@ -74,6 +78,10 @@ const nameBody = z.object({ name: z.string() });
 const changePasswordBody = z.object({ currentPassword: z.string().max(200).optional(), newPassword: passwordRule });
 const forgotBody = z.object({ email: z.string().trim().toLowerCase().max(320) });
 const resetBody = z.object({ token: z.string().min(10).max(200), password: passwordRule });
+const verifyBody = z.object({
+  email: z.string().trim().toLowerCase().max(320),
+  code: z.string().trim().regex(/^\d{6}$/, 'must be the 6 digits from the email'),
+});
 
 // When the email doesn't exist we still check the password against this dummy hash.
 // That way "wrong email" and "wrong password" take the same time, so an attacker
@@ -127,9 +135,11 @@ export function authRouter({
   const loginLimiter = limiter(15, loginAttemptsPerWindow, 'Too many login attempts. Please wait 15 minutes and try again.', true);
   const signupLimiter = limiter(60, 10, 'Too many sign-ups from this network. Please try again later.');
   const forgotLimiter = limiter(15, 5, 'Too many reset requests. Please wait 15 minutes and try again.');
+  const verifyLimiter = limiter(15, 20, 'Too many tries. Please wait 15 minutes and try again.');
+  const resendLimiter = limiter(15, 5, 'Too many new codes requested. Please wait 15 minutes and try again.');
 
   router.get('/providers', (_req, res) => {
-    res.json({ google: Boolean(google), signup: allowSignup, passwordReset: Boolean(mailer) });
+    res.json({ google: Boolean(google), signup: allowSignup, passwordReset: Boolean(mailer), emailVerification: Boolean(mailer) });
   });
 
   // ---------- Sign up / log in / log out ----------
@@ -140,9 +150,15 @@ export function authRouter({
     asyncHandler(async (req, res) => {
       if (!allowSignup) throw AppError.forbidden('Sign-up is turned off. Ask an admin for an account.');
       const input = signupInput.parse(req.body);
-      const user = await signUp(input, checkEmail);
+      const { user, needsVerification, emailSent } = await signUp(input, checkEmail, mailer);
+      req.log.info({ userId: String(user._id), needsVerification }, 'New account created');
+      if (needsVerification) {
+        // NOT logged in yet: they must enter the code from the email first.
+        if (!emailSent) req.log.error('Could not send the verification email');
+        res.status(202).json({ needsVerification: true, email: user.email, emailSent });
+        return;
+      }
       await startSession(res, user._id);
-      req.log.info({ userId: String(user._id) }, 'New account created');
       res.status(201).json({ user: toPublicUser(user) });
     }),
   );
@@ -162,6 +178,13 @@ export function authRouter({
       if (!user || !user.passwordHash || !passwordOk) {
         throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
       }
+      // Right password, but the email was never confirmed: send them to the code screen.
+      // (Only said AFTER the password matched, so it reveals nothing to strangers.)
+      if (user.emailVerified === false) {
+        throw new AppError(403, 'EMAIL_NOT_VERIFIED', 'Please verify your email first: enter the code we sent you.', {
+          email: user.email,
+        });
+      }
 
       await startSession(res, user._id);
       req.log.info({ userId: String(user._id) }, 'Recruiter logged in');
@@ -177,6 +200,36 @@ export function authRouter({
       // Clearing needs the same options the cookie was set with.
       res.clearCookie(SESSION_COOKIE, cookieOptions);
       res.status(204).end();
+    }),
+  );
+
+  // ---------- Email verification ----------
+
+  router.post(
+    '/verify-email',
+    verifyLimiter,
+    asyncHandler(async (req, res) => {
+      const { email, code } = verifyBody.parse(req.body);
+      const user = await verifyEmail(email, code);
+      await startSession(res, user._id);
+      req.log.info({ userId: String(user._id) }, 'Email verified');
+      res.json({ user: toPublicUser(user) });
+    }),
+  );
+
+  router.post(
+    '/resend-verification',
+    resendLimiter,
+    asyncHandler(async (req, res) => {
+      if (!mailer) throw new AppError(503, 'EMAIL_OFF', 'Email is not set up on this server.');
+      const { email } = forgotBody.parse(req.body);
+      try {
+        await resendVerification(email, mailer);
+      } catch (err) {
+        req.log.error({ err }, 'Could not send verification email');
+        throw new AppError(503, 'EMAIL_FAILED', "We couldn't send the email right now. Please try again in a few minutes.");
+      }
+      res.json({ ok: true, message: 'If that email is waiting for verification, we sent a new code.' });
     }),
   );
 

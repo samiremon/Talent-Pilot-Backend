@@ -2,7 +2,7 @@
  * Account management: sign up, profile changes, and "forgot password".
  * The HTTP side is in auth/routes.ts; this file holds the rules.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { Types } from 'mongoose';
 import { z } from 'zod';
 import { escapeHtml, type Mailer } from '../email/mailer.js';
@@ -28,23 +28,51 @@ export const signupInput = z.object({
   password: passwordRule,
 });
 
+const UNVERIFIED_HOURS = 24;
+const CODE_MINUTES = 15;
+const MAX_CODE_ATTEMPTS = 5;
+
+/** The code is hashed together with the user id, so equal codes never look equal in the DB. */
+function hashCode(userId: unknown, code: string): string {
+  return createHash('sha256').update(`${String(userId)}:${code}`).digest('hex');
+}
+
 /**
- * Creates a password account. Throws a 400 with a clear message if the email is invalid
- * (bad format or a domain that doesn't exist), or 409 if it's already registered.
+ * Creates a password account.
+ *
+ * Throws a 400 with a clear message if the email is invalid (bad format or a domain that
+ * doesn't exist), or 409 if a VERIFIED account already uses it.
+ *
+ * With `mailer` (normal case) the account starts UNVERIFIED and a 6-digit code is emailed;
+ * the caller must not log the user in until verifyEmail() succeeds. Signing up again with
+ * the same unverified email (e.g. after a typo in the name) just updates it and sends a
+ * fresh code. Without a mailer there's no way to send a code, so the account is verified
+ * straight away.
  */
-export async function signUp(input: z.infer<typeof signupInput>, checkEmail: EmailChecker) {
+export async function signUp(input: z.infer<typeof signupInput>, checkEmail: EmailChecker, mailer?: Mailer) {
   const problem = await checkEmail(input.email);
   if (problem) throw new AppError(400, 'INVALID_EMAIL', problem, [{ path: 'email', message: problem }]);
 
-  if (await UserModel.exists({ email: input.email })) {
+  const existing = await UserModel.findOne({ email: input.email });
+  if (existing && existing.emailVerified !== false) {
     throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists. Try logging in instead.', [
       { path: 'email', message: 'is already registered' },
     ]);
   }
 
+  const fields = {
+    name: input.name,
+    passwordHash: await hashPassword(input.password),
+    emailVerified: !mailer,
+    unverifiedExpiresAt: mailer ? new Date(Date.now() + UNVERIFIED_HOURS * 60 * 60 * 1000) : undefined,
+  };
+
+  let user;
   try {
-    const user = await UserModel.create({ name: input.name, email: input.email, passwordHash: await hashPassword(input.password) });
-    return user;
+    user = existing
+      ? Object.assign(existing, fields)
+      : new UserModel({ email: input.email, ...fields });
+    await user.save();
   } catch (err) {
     // Two sign-ups with the same email at the same moment: the database's unique index wins.
     if ((err as { code?: number }).code === 11000) {
@@ -52,6 +80,103 @@ export async function signUp(input: z.infer<typeof signupInput>, checkEmail: Ema
     }
     throw err;
   }
+
+  // If the email server is down, the account still exists: the code screen tells the
+  // person to press "Send a new code" in a moment instead of failing the whole sign-up.
+  let emailSent = false;
+  if (mailer) {
+    try {
+      await sendVerificationCode(user._id, mailer);
+      emailSent = true;
+    } catch {
+      emailSent = false;
+    }
+  }
+  return { user, needsVerification: Boolean(mailer), emailSent };
+}
+
+/** Makes a new 6-digit code for an unverified account and emails it. */
+export async function sendVerificationCode(userId: unknown, mailer: Mailer): Promise<void> {
+  const user = await UserModel.findById(userId);
+  if (!user || user.emailVerified !== false) return;
+
+  // randomInt is cryptographically secure; padStart keeps leading zeros ("004213").
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  await UserModel.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        verifyCodeHash: hashCode(user._id, code),
+        verifyCodeExpiresAt: new Date(Date.now() + CODE_MINUTES * 60 * 1000),
+        verifyAttempts: 0,
+      },
+    },
+  );
+
+  await mailer.send({
+    to: user.email,
+    subject: `${code} is your TalentPilot verification code`,
+    text: [
+      `Hi ${user.name},`,
+      '',
+      `Your TalentPilot verification code is: ${code}`,
+      '',
+      `Enter it on the sign-up page to finish creating your account. It works for ${CODE_MINUTES} minutes.`,
+      "If you didn't sign up for TalentPilot, ignore this email; the account will be removed automatically.",
+    ].join('\n'),
+    html: `<p>Hi ${escapeHtml(user.name)},</p>
+<p>Your TalentPilot verification code is:</p>
+<p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p>
+<p>Enter it on the sign-up page to finish creating your account. It works for ${CODE_MINUTES} minutes.</p>
+<p>If you didn't sign up for TalentPilot, ignore this email; the account will be removed automatically.</p>`,
+  });
+}
+
+/** "Send me a new code": does nothing (silently) unless an unverified account exists. */
+export async function resendVerification(email: string, mailer: Mailer): Promise<void> {
+  const user = await UserModel.findOne({ email: email.trim().toLowerCase(), emailVerified: false }).lean();
+  if (user) await sendVerificationCode(user._id, mailer);
+}
+
+/**
+ * Checks the 6-digit code. On success the account becomes verified (and stops expiring)
+ * and is returned so the caller can log the person in.
+ */
+export async function verifyEmail(email: string, code: string) {
+  const invalid = () =>
+    new AppError(400, 'CODE_INVALID', 'That code is not right. Check the email and try again.', [
+      { path: 'code', message: 'is not right' },
+    ]);
+  const user = await UserModel.findOne({ email: email.trim().toLowerCase() }).select(
+    '+verifyCodeHash +verifyCodeExpiresAt +verifyAttempts +passwordHash',
+  );
+  if (!user) throw invalid();
+  if (user.emailVerified !== false) {
+    throw new AppError(409, 'ALREADY_VERIFIED', 'This email is already verified. Please log in.');
+  }
+  if (!user.verifyCodeHash || !user.verifyCodeExpiresAt || user.verifyCodeExpiresAt < new Date()) {
+    throw new AppError(400, 'CODE_EXPIRED', 'This code has expired. Ask for a new one.');
+  }
+  if ((user.verifyAttempts ?? 0) >= MAX_CODE_ATTEMPTS) {
+    throw new AppError(429, 'TOO_MANY_ATTEMPTS', 'Too many wrong codes. Ask for a new one.');
+  }
+
+  const expected = Buffer.from(user.verifyCodeHash, 'hex');
+  const actual = Buffer.from(hashCode(user._id, code.trim()), 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    await UserModel.updateOne({ _id: user._id }, { $inc: { verifyAttempts: 1 } });
+    throw invalid();
+  }
+
+  await UserModel.updateOne(
+    { _id: user._id },
+    {
+      $set: { emailVerified: true },
+      $unset: { unverifiedExpiresAt: 1, verifyCodeHash: 1, verifyCodeExpiresAt: 1, verifyAttempts: 1 },
+    },
+  );
+  user.emailVerified = true;
+  return user;
 }
 
 export async function updateName(userId: string, name: string) {
@@ -155,6 +280,10 @@ export async function resetPassword(token: string, newPassword: string): Promise
   if (!reset) {
     throw new AppError(400, 'RESET_LINK_INVALID', 'This reset link is invalid or has expired. Please request a new one.');
   }
-  await UserModel.updateOne({ _id: reset.userId }, { $set: { passwordHash: await hashPassword(password) } });
+  // Opening the emailed link also proves the person owns the email: mark it verified.
+  await UserModel.updateOne(
+    { _id: reset.userId },
+    { $set: { passwordHash: await hashPassword(password), emailVerified: true }, $unset: { unverifiedExpiresAt: 1 } },
+  );
   await deleteUserSessions(new Types.ObjectId(String(reset.userId)));
 }

@@ -75,6 +75,9 @@ The server refuses to start if a setting is invalid or MongoDB can't be reached.
 
 - **Sign up** with name, email and password. The email is checked for format **and** that its
   domain really exists and accepts mail (`rahim@gmial.com` → "Did you mean gmail.com?").
+- **Email verification:** a new account only works after entering the **6-digit code** emailed to
+  it (15 minutes, max 5 tries, "Send a new code" available). Made-up addresses never get the code,
+  and unverified sign-ups delete themselves after 24 hours. Google accounts are verified by Google.
 - **Forgot password** emails a one-time link (valid 30 minutes). In the demo, emails land in
   **Mailpit**: <http://localhost:8025>. Set `SMTP_*` in `.env` to send real email.
 - **Profile** (account menu → Profile): change your name or password. Changing the password

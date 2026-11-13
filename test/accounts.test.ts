@@ -66,6 +66,22 @@ function makeApp(googleProfile: Record<string, unknown> = {}) {
 
 const NEW_USER = { name: 'Nadia Islam', email: 'Nadia.Islam@gmail.com', password: 'a-good-long-password' };
 
+/** Pulls the 6-digit code out of the newest verification email. */
+function codeFrom(mailer: ReturnType<typeof createMemoryMailer>): string {
+  const mail = [...mailer.sent].reverse().find((m) => m.subject.includes('verification code'));
+  return /(\d{6}) is your TalentPilot verification code/.exec(mail?.subject ?? '')?.[1] ?? '';
+}
+
+/** Signs up AND enters the emailed code, leaving `agent` logged in. */
+async function signUpVerified(
+  agent: ReturnType<typeof request.agent>,
+  mailer: ReturnType<typeof createMemoryMailer>,
+  user = NEW_USER,
+) {
+  await agent.post('/auth/signup').send(user).expect(202);
+  await agent.post('/auth/verify-email').send({ email: user.email, code: codeFrom(mailer) }).expect(200);
+}
+
 beforeEach(() => {
   // Each test builds its own app (fresh rate limits).
 });
@@ -73,12 +89,59 @@ beforeEach(() => {
 // ---------- Sign up ----------
 
 describe('sign up', () => {
-  it('creates the account, logs in, and stores the email in lowercase', async () => {
-    const { app } = makeApp();
+  it('creates an UNVERIFIED account, emails a code, and logs in only with the right code', async () => {
+    const { app, mailer } = makeApp();
     const agent = request.agent(app);
-    const res = await agent.post('/auth/signup').send(NEW_USER).expect(201);
-    expect(res.body.user).toMatchObject({ name: 'Nadia Islam', email: 'nadia.islam@gmail.com', hasPassword: true, hasGoogle: false });
+    const res = await agent.post('/auth/signup').send(NEW_USER).expect(202);
+    expect(res.body).toEqual({ needsVerification: true, email: 'nadia.islam@gmail.com', emailSent: true });
+    await agent.get('/auth/me').expect(401); // not logged in yet
+
+    // The account exists but can't log in until verified, and will expire if never verified.
+    const stored = await UserModel.findOne({ email: 'nadia.islam@gmail.com' }).lean();
+    expect(stored).toMatchObject({ emailVerified: false });
+    expect(stored?.unverifiedExpiresAt).toBeInstanceOf(Date);
+    const login = await request(app).post('/auth/login').send({ email: NEW_USER.email, password: NEW_USER.password }).expect(403);
+    expect(login.body.error).toMatchObject({ code: 'EMAIL_NOT_VERIFIED', details: { email: 'nadia.islam@gmail.com' } });
+
+    // The email went to the right address, with a 6-digit code.
+    expect(mailer.sent[0]).toMatchObject({ to: 'nadia.islam@gmail.com' });
+    const code = codeFrom(mailer);
+    expect(code).toMatch(/^\d{6}$/);
+
+    const wrong = code === '000000' ? '000001' : '000000';
+    expect((await agent.post('/auth/verify-email').send({ email: NEW_USER.email, code: wrong }).expect(400)).body.error.code).toBe('CODE_INVALID');
+
+    const ok = await agent.post('/auth/verify-email').send({ email: NEW_USER.email, code }).expect(200);
+    expect(ok.body.user).toMatchObject({ name: 'Nadia Islam', email: 'nadia.islam@gmail.com', hasPassword: true, hasGoogle: false });
     expect((await agent.get('/auth/me').expect(200)).body.user.name).toBe('Nadia Islam');
+    // Verified accounts never expire.
+    expect((await UserModel.findOne({ email: 'nadia.islam@gmail.com' }).lean())?.unverifiedExpiresAt).toBeUndefined();
+  });
+
+  it('refuses an expired code and locks after 5 wrong codes until a new one is sent', async () => {
+    const { app, mailer } = makeApp();
+    await request(app).post('/auth/signup').send(NEW_USER).expect(202);
+    const code = codeFrom(mailer);
+    const wrong = code === '111111' ? '222222' : '111111';
+    for (let i = 0; i < 5; i++) await request(app).post('/auth/verify-email').send({ email: NEW_USER.email, code: wrong }).expect(400);
+    // Even the right code is refused now: too many guesses.
+    await request(app).post('/auth/verify-email').send({ email: NEW_USER.email, code }).expect(429);
+
+    // "Send a new code" -> the new code works.
+    await request(app).post('/auth/resend-verification').send({ email: NEW_USER.email }).expect(200);
+    const fresh = codeFrom(mailer);
+    await UserModel.updateOne({ email: 'nadia.islam@gmail.com' }, { $set: { verifyCodeExpiresAt: new Date(Date.now() - 1000) } });
+    expect((await request(app).post('/auth/verify-email').send({ email: NEW_USER.email, code: fresh }).expect(400)).body.error.code).toBe('CODE_EXPIRED');
+
+    await request(app).post('/auth/resend-verification').send({ email: NEW_USER.email }).expect(200);
+    await request(app).post('/auth/verify-email').send({ email: NEW_USER.email, code: codeFrom(mailer) }).expect(200);
+  });
+
+  it('answers "resend" the same way for unknown emails and sends nothing', async () => {
+    const { app, mailer } = makeApp();
+    const res = await request(app).post('/auth/resend-verification').send({ email: 'nobody@gmail.com' }).expect(200);
+    expect(res.body.message).toContain('If that email is waiting for verification');
+    expect(mailer.sent).toHaveLength(0);
   });
 
   it.each([
@@ -96,13 +159,17 @@ describe('sign up', () => {
 
   it('accepts a domain with only an address record, and does not block when DNS is down', async () => {
     const { app } = makeApp();
-    await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'a@acme.io' }).expect(201);
-    await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'b@slowdns.com' }).expect(201);
+    await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'a@acme.io' }).expect(202);
+    await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'b@slowdns.com' }).expect(202);
   });
 
-  it('refuses a second account with the same email, and a short password', async () => {
-    const { app } = makeApp();
-    await request(app).post('/auth/signup').send(NEW_USER).expect(201);
+  it('lets an unverified sign-up be redone, but refuses a verified email, and a short password', async () => {
+    const { app, mailer } = makeApp();
+    await request(app).post('/auth/signup').send(NEW_USER).expect(202);
+    // Signing up again before verifying just updates it and sends a new code.
+    await request(app).post('/auth/signup').send({ ...NEW_USER, name: 'Nadia I.' }).expect(202);
+    expect(await UserModel.countDocuments()).toBe(1);
+    await request(app).post('/auth/verify-email').send({ email: NEW_USER.email, code: codeFrom(mailer) }).expect(200);
     const again = await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'nadia.islam@GMAIL.com' }).expect(409);
     expect(again.body.error.code).toBe('EMAIL_TAKEN');
     const short = await request(app).post('/auth/signup').send({ ...NEW_USER, email: 'x@gmail.com', password: 'short' }).expect(400);
@@ -111,7 +178,12 @@ describe('sign up', () => {
 
   it('tells the login page which options exist', async () => {
     const { app } = makeApp();
-    expect((await request(app).get('/auth/providers').expect(200)).body).toEqual({ google: true, signup: true, passwordReset: true });
+    expect((await request(app).get('/auth/providers').expect(200)).body).toEqual({
+      google: true,
+      signup: true,
+      passwordReset: true,
+      emailVerification: true,
+    });
   });
 });
 
@@ -119,19 +191,19 @@ describe('sign up', () => {
 
 describe('profile', () => {
   it('changes the name', async () => {
-    const { app } = makeApp();
+    const { app, mailer } = makeApp();
     const agent = request.agent(app);
-    await agent.post('/auth/signup').send(NEW_USER).expect(201);
+    await signUpVerified(agent, mailer);
     const res = await agent.patch('/auth/me').send({ name: '  Nadia I.  ' }).expect(200);
     expect(res.body.user.name).toBe('Nadia I.');
     await agent.patch('/auth/me').send({ name: '   ' }).expect(400);
   });
 
   it('changes the password only with the right current one, and logs out other browsers', async () => {
-    const { app } = makeApp();
+    const { app, mailer } = makeApp();
     const laptop = request.agent(app);
     const phone = request.agent(app);
-    await laptop.post('/auth/signup').send(NEW_USER).expect(201);
+    await signUpVerified(laptop, mailer);
     await phone.post('/auth/login').send({ email: NEW_USER.email, password: NEW_USER.password }).expect(200);
 
     const wrong = await laptop
@@ -151,7 +223,9 @@ describe('profile', () => {
 // ---------- Forgot password ----------
 
 describe('forgot password', () => {
-  /** Pulls the reset token out of the emailed link. */
+  /** Pulls the reset token out of the newest reset email. */
+  const resetMail = (mailer: ReturnType<typeof createMemoryMailer>) =>
+    [...mailer.sent].reverse().find((m) => m.subject === 'Reset your TalentPilot password')!;
   const tokenFrom = (text: string) => /reset-password\?token=([^\s]+)/.exec(text)?.[1] ?? '';
 
   it('gives the same answer for unknown emails and sends nothing', async () => {
@@ -164,14 +238,14 @@ describe('forgot password', () => {
   it('emails a one-time link that sets a new password and logs out everywhere', async () => {
     const { app, mailer } = makeApp();
     const agent = request.agent(app);
-    await agent.post('/auth/signup').send(NEW_USER).expect(201);
+    await signUpVerified(agent, mailer);
 
     await request(app).post('/auth/forgot-password').send({ email: 'NADIA.islam@gmail.com' }).expect(200);
-    expect(mailer.sent).toHaveLength(1);
-    expect(mailer.sent[0]).toMatchObject({ to: 'nadia.islam@gmail.com', subject: 'Reset your TalentPilot password' });
-    expect(mailer.sent[0]!.text).toContain(`${APP_URL}/reset-password?token=`);
+    const mail = resetMail(mailer);
+    expect(mail).toMatchObject({ to: 'nadia.islam@gmail.com', subject: 'Reset your TalentPilot password' });
+    expect(mail.text).toContain(`${APP_URL}/reset-password?token=`);
 
-    const token = decodeURIComponent(tokenFrom(mailer.sent[0]!.text));
+    const token = decodeURIComponent(tokenFrom(mail.text));
     expect((await request(app).get(`/auth/reset-password/${token}`).expect(200)).body.valid).toBe(true);
     // Only a hash is stored, not the token from the email.
     expect(await PasswordResetModel.countDocuments({ tokenHash: token })).toBe(0);
@@ -187,10 +261,10 @@ describe('forgot password', () => {
 
   it('refuses an expired link', async () => {
     const { app, mailer } = makeApp();
-    await request(app).post('/auth/signup').send(NEW_USER).expect(201);
+    await signUpVerified(request.agent(app), mailer);
     await request(app).post('/auth/forgot-password').send({ email: NEW_USER.email }).expect(200);
     await PasswordResetModel.updateMany({}, { $set: { expiresAt: new Date(Date.now() - 1000) } });
-    const token = decodeURIComponent(tokenFrom(mailer.sent[0]!.text));
+    const token = decodeURIComponent(tokenFrom(resetMail(mailer).text));
     await request(app).post('/auth/reset-password').send({ token, password: 'my-new-password-1' }).expect(400);
   });
 });
@@ -226,7 +300,8 @@ describe('Continue with Google', () => {
 
   it('links Google to an existing account with the same email', async () => {
     const { app } = makeApp({ sub: 'google-2', email: 'nadia.islam@gmail.com', email_verified: true, name: 'N' });
-    await request(app).post('/auth/signup').send(NEW_USER).expect(201);
+    // Signed up but never verified: Google's verified email verifies it.
+    await request(app).post('/auth/signup').send(NEW_USER).expect(202);
     const { agent } = await signInWithGoogle(app);
     const me = (await agent.get('/auth/me').expect(200)).body.user;
     expect(me).toMatchObject({ name: 'Nadia Islam', hasGoogle: true, hasPassword: true });

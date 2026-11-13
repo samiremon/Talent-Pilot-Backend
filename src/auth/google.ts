@@ -106,6 +106,9 @@ export async function finishGoogleSignIn(
   const byEmail = await UserModel.findOne({ email });
   if (byEmail) {
     byEmail.googleId = profile.sub;
+    // Google has verified this email, so an unverified sign-up becomes verified too.
+    byEmail.emailVerified = true;
+    byEmail.unverifiedExpiresAt = undefined;
     await byEmail.save();
     return byEmail;
   }
