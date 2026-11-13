@@ -149,6 +149,28 @@ async function tokensSince(since: Date, modelName?: string): Promise<number> {
   return row?.total ?? 0;
 }
 
+/** Groq's daily token limit status, from Groq's own answers only (see rateLimits.ts). */
+function dailyTokenStatus(snap?: {
+  lastOkAt?: Date | null;
+  limitTokensDay?: number | null;
+  usedTokensDay?: number | null;
+  dayRefusedAt?: Date | null;
+  dayFreesAt?: Date | null;
+}) {
+  const ok = snap?.lastOkAt ? new Date(snap.lastOkAt) : null;
+  const refused = snap?.dayRefusedAt ? new Date(snap.dayRefusedAt) : null;
+  const status = refused && (!ok || ok < refused) ? 'used_up' : ok ? 'available' : 'unknown';
+  return {
+    status,
+    lastOkAt: ok,
+    // Groq's numbers from its last daily-limit refusal (kept for reference even after).
+    limit: snap?.limitTokensDay ?? null,
+    used: status === 'used_up' ? (snap?.usedTokensDay ?? null) : null,
+    refusedAt: refused,
+    freesAt: status === 'used_up' && snap?.dayFreesAt ? new Date(snap.dayFreesAt) : null,
+  };
+}
+
 /**
  * For each Groq model: requests left today and tokens left this minute (live from Groq's
  * last answer), and tokens left today (our own count vs the daily limit from .env).
@@ -206,6 +228,12 @@ export async function aiLimits(ai: Pick<Ai, 'mode' | 'models'>, settings: LimitS
         // so the recruiter sees real usage next to Groq's refilling bucket.
         callsLast24h: await AiUsageModel.countDocuments({ model: modelName, createdAt: { $gte: day } }),
         tokensToday: meter(await tokensSince(day, modelName), settings.dailyTokens),
+        // Groq's daily TOKEN limit, exactly as Groq reported it (no estimate: Groq doesn't
+        // send this in headers, and counts in its own way):
+        //   "available" = Groq's latest answer for this model was a normal one
+        //   "used_up"   = Groq's latest answer was a daily-limit refusal, with its own numbers
+        //   "unknown"   = no answer from Groq yet (press "Check now")
+        dailyTokens: dailyTokenStatus(snap),
       };
     }),
   );

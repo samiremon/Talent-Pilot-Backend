@@ -14,8 +14,11 @@
  * The latest numbers are saved in MongoDB, so they survive restarts and any process
  * (API or background worker) sees the same picture.
  *
- * Groq has NO weekly or monthly limit on the free tier, and doesn't report the daily
- * TOKEN limit in headers: the dashboard handles those with optional budgets from .env.
+ * Groq has NO weekly or monthly limit on the free tier. The DAILY TOKEN limit (e.g. 200,000
+ * a day) is NOT in the headers, but when Groq refuses a call because of it, the error says
+ * exactly where we stand: "... tokens per day (TPD): Limit 200000, Used 199135, ...".
+ * We save exactly that (and when Groq last ACCEPTED a call), and the Remaining usage tab
+ * shows it as is. We don't estimate: Groq counts in its own way, which we can't see.
  */
 import { Schema, model } from 'mongoose';
 
@@ -28,6 +31,14 @@ const snapshotSchema = new Schema({
   remainingTokens: Number,
   resetTokensAt: Date,
   updatedAt: Date,
+  // When Groq last answered a call normally (= the daily limit wasn't used up then).
+  lastOkAt: Date,
+  // Groq's own numbers from its last "daily token limit" refusal (empty until one happens).
+  limitTokensDay: Number,
+  usedTokensDay: Number,
+  dayRefusedAt: Date,
+  // "Please try again in 15m56s" -> when Groq said it frees up again.
+  dayFreesAt: Date,
 });
 export const RateLimitSnapshotModel = model('RateLimitSnapshot', snapshotSchema);
 
@@ -70,15 +81,54 @@ export async function recordRateLimits(modelName: string, headers: Headers, now 
 }
 
 /**
+ * "...(TPD): Limit 200000, Used 199135, Requested 2214. Please try again in 15m56s."
+ * -> { limit: 200000, used: 199135, waitMs: 956000 }, or null for any other error.
+ */
+export function parseDailyTokenLimit(text: string): { limit: number; used: number; waitMs: number } | null {
+  const match = /\(TPD\):\s*Limit (\d+), Used (\d+)/.exec(text);
+  if (!match) return null;
+  const wait = /try again in ((?:[\d.]+(?:ms|h|m|s))+)/i.exec(text)?.[1] ?? null;
+  return { limit: Number(match[1]), used: Number(match[2]), waitMs: parseDuration(wait) };
+}
+
+/** Saves Groq's daily-limit refusal exactly as Groq stated it. */
+export async function recordDailyTokenLimit(modelName: string, info: { limit: number; used: number; waitMs: number }, now = new Date()) {
+  await RateLimitSnapshotModel.updateOne(
+    { _id: modelName },
+    {
+      $set: {
+        limitTokensDay: info.limit,
+        usedTokensDay: info.used,
+        dayRefusedAt: now,
+        dayFreesAt: new Date(now.getTime() + info.waitMs),
+      },
+    },
+    { upsert: true },
+  );
+}
+
+/**
  * A drop-in `fetch` for ChatGroq: does the real request, then notes the limit headers.
  * Recording problems never break the AI call.
  */
 export function rateLimitFetch(baseFetch: typeof fetch = fetch): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const res = await baseFetch(input, init);
+    // Saved BEFORE handing the answer back (a few ms), so a "Check now" right after
+    // always reads the fresh numbers. Recording problems never break the AI call.
     try {
       const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { model?: string }) : undefined;
-      if (body?.model) void recordRateLimits(body.model, res.headers).catch(() => undefined);
+      if (body?.model) {
+        const modelName = body.model;
+        await recordRateLimits(modelName, res.headers).catch(() => undefined);
+        // Groq answered normally: the daily limit wasn't used up at this moment.
+        if (res.ok) await RateLimitSnapshotModel.updateOne({ _id: modelName }, { $set: { lastOkAt: new Date() } }, { upsert: true }).catch(() => undefined);
+        // Refused because of the DAILY token limit? Groq's error text says exactly where we stand.
+        if (res.status === 429) {
+          const daily = parseDailyTokenLimit(await res.clone().text().catch(() => ''));
+          if (daily) await recordDailyTokenLimit(modelName, daily).catch(() => undefined);
+        }
+      }
     } catch {
       // Not JSON / no model: nothing to record.
     }

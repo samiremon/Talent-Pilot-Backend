@@ -83,3 +83,28 @@ describe('Groq rate limits', () => {
     expect(result.month).toEqual({ used: 16_000, limit: null, remaining: null, percentLeft: null });
   });
 });
+
+describe("Groq's daily token limit: shown exactly as Groq reports it", () => {
+  it('reads the refusal, and says available again after Groq accepts a call', async () => {
+    const { parseDailyTokenLimit, recordDailyTokenLimit, RateLimitSnapshotModel } = await import('../src/ai/rateLimits.js');
+    const info = parseDailyTokenLimit(
+      'Rate limit reached for model `openai/gpt-oss-120b` on tokens per day (TPD): Limit 200000, Used 199135, Requested 2214. Please try again in 15m56s.',
+    );
+    expect(info).toEqual({ limit: 200_000, used: 199_135, waitMs: 956_000 });
+
+    const now = new Date('2026-11-13T12:00:00Z');
+    await RateLimitSnapshotModel.create({ _id: 'openai/gpt-oss-120b', lastOkAt: new Date(now.getTime() - 60_000) });
+    await recordDailyTokenLimit('openai/gpt-oss-120b', info!, now);
+    let big = (await aiLimits(AI, {}, now)).models.find((m) => m.model === 'openai/gpt-oss-120b')!;
+    expect(big.dailyTokens).toMatchObject({ status: 'used_up', limit: 200_000, used: 199_135, freesAt: new Date(now.getTime() + 956_000) });
+
+    // Later Groq answers normally again: available (no guessing about how much).
+    await RateLimitSnapshotModel.updateOne({ _id: 'openai/gpt-oss-120b' }, { $set: { lastOkAt: new Date(now.getTime() + 20 * 60_000) } });
+    big = (await aiLimits(AI, {}, new Date(now.getTime() + 21 * 60_000))).models.find((m) => m.model === 'openai/gpt-oss-120b')!;
+    expect(big.dailyTokens).toMatchObject({ status: 'available', limit: 200_000, used: null, freesAt: null });
+
+    // A model Groq hasn't answered for yet: unknown.
+    const small = (await aiLimits(AI, {}, now)).models.find((m) => m.model !== 'openai/gpt-oss-120b')!;
+    expect(small.dailyTokens.status).toBe('unknown');
+  });
+});
