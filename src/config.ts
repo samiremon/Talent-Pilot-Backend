@@ -17,6 +17,9 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   CORS_ORIGINS: originList.default(['http://localhost:5173']),
+  MONGODB_URI: z
+    .string({ error: 'is required (see .env.example)' })
+    .regex(/^mongodb(\+srv)?:\/\//, 'must start with mongodb:// or mongodb+srv://'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
 
@@ -25,6 +28,7 @@ export type Config = {
   port: number;
   corsOrigins: string[];
   logLevel: LogLevel;
+  mongodbUri: string;
 };
 
 /**
@@ -39,8 +43,8 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
       .join('\n');
     throw new Error(`Invalid settings, the server cannot start:\n${problems}`);
   }
-  const { NODE_ENV, PORT, CORS_ORIGINS, LOG_LEVEL } = result.data;
-  return { nodeEnv: NODE_ENV, port: PORT, corsOrigins: CORS_ORIGINS, logLevel: LOG_LEVEL };
+  const { NODE_ENV, PORT, CORS_ORIGINS, LOG_LEVEL, MONGODB_URI } = result.data;
+  return { nodeEnv: NODE_ENV, port: PORT, corsOrigins: CORS_ORIGINS, logLevel: LOG_LEVEL, mongodbUri: MONGODB_URI };
 }
 
 /** Loads `.env` (if present, outside production) and returns checked settings. */

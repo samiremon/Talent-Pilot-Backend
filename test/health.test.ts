@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 
-const app = createApp({ corsOrigins: ['http://localhost:5173'] });
+const app = createApp({ corsOrigins: ['http://localhost:5173'], isDatabaseReady: () => true });
 
 describe('GET /health', () => {
   it('returns ok status', async () => {
@@ -10,6 +10,15 @@ describe('GET /health', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.service).toBe('talent-pilot-backend');
+    expect(res.body.checks).toEqual({ database: 'up' });
+  });
+
+  it('returns 503 when the database is down', async () => {
+    const down = createApp({ corsOrigins: ['http://localhost:5173'], isDatabaseReady: () => false });
+    const res = await request(down).get('/health');
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.checks).toEqual({ database: 'down' });
   });
 
   it('sets security headers and hides Express', async () => {

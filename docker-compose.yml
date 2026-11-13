@@ -58,6 +58,9 @@ services:
   mongo:
     image: mongo:7.0
     restart: unless-stopped
+    # Published on 127.0.0.1 only, so `npm run dev` on this machine can reach it but nothing else can.
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-talentpilot}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}

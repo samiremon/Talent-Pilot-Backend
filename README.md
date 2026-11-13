@@ -35,12 +35,14 @@ dependencies are healthy before starting.
 ## Run locally without Docker
 
 ```bash
-cp .env.example .env
+cp .env.example .env        # set the passwords; MONGODB_URI must use the same Mongo password
 npm install
+docker compose up -d mongo  # MongoDB, reachable only from this machine (127.0.0.1:27017)
 npm run dev
 ```
 
-Check it works: <http://localhost:4000/health>
+Check it works: <http://localhost:4000/health> should show `"database":"up"`.
+The server refuses to start if a setting is invalid or MongoDB can't be reached.
 
 ## Scripts
 
