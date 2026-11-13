@@ -22,6 +22,7 @@
 import { Types } from 'mongoose';
 import { z } from 'zod';
 import type { Ai } from '../ai/client.js';
+import { AppError } from '../errors.js';
 import { ActivityModel } from '../models/activity.js';
 import { CandidateModel } from '../models/candidate.js';
 import { JobModel } from '../models/job.js';
@@ -141,6 +142,46 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
       message: total ? `Scoring 0 of ${total}…` : 'Nothing to score.',
     });
 
+    /**
+     * Asks the AI to score a group of candidates. If the answer comes back BROKEN (Groq:
+     * "Failed to parse tool call arguments as JSON" / "model did not call a tool"; this
+     * happens now and then with the small scoring model on big answers), the group is split
+     * in half and each half is asked separately, down to one person. Smaller answers are far
+     * more reliable, and a person whose text keeps confusing the model only affects
+     * themselves: they're left unscored (retried on the next run) and the run goes on.
+     * Rate limits and key problems are NOT split: they're passed on (waited for / reported).
+     */
+    type Labelled = { doc: (typeof todo)[number]; id: string; text: string; label: string };
+    async function askInGroups(group: Labelled[]): Promise<z.infer<typeof batchSchema>['results']> {
+      try {
+        const { data } = await ai.structured({
+          task: 'score_candidates',
+          role: 'bulk',
+          system: SYSTEM_PROMPT,
+          user: JSON.stringify({
+            job: {
+              title: job!.title,
+              seniority: job!.seniority ?? 'not stated',
+              location: job!.location ?? 'not stated',
+              mustHaveSkills: job!.mustHaveSkills,
+              niceToHaveSkills: job!.niceToHaveSkills,
+            },
+            candidates: group.map((c) => ({ id: c.label, text: c.text })),
+          }),
+          schema: batchSchema,
+          mock: () => ({ results: group.map((c) => ({ ...mockScore(job!, c), id: c.label })) }),
+          target: { jobId },
+          userId: userId ?? null,
+        });
+        return data.results;
+      } catch (err) {
+        if (!(err instanceof AppError) || err.code !== 'AI_FAILED') throw err;
+        if (group.length === 1) return []; // this one stays unscored; the run continues
+        const half = Math.ceil(group.length / 2);
+        return [...(await askInGroups(group.slice(0, half))), ...(await askInGroups(group.slice(half)))];
+      }
+    }
+
     try {
       // Everyone we've picked up in this run (so nobody is tried twice in one run).
       const attempted = new Set(todo.map((c) => String(c._id)));
@@ -185,28 +226,10 @@ export function scoreCandidatesProcessor({ ai, events }: { ai: Ai; events: TaskE
           let remaining = withText.map((c, index) => ({ ...c, label: `c${index + 1}` }));
           // Up to 2 tries per batch: anyone the AI skipped the first time is asked again.
           for (let round = 1; round <= 2 && remaining.length; round++) {
-            const { data } = await ai.structured({
-              task: 'score_candidates',
-              role: 'bulk',
-              system: SYSTEM_PROMPT,
-              user: JSON.stringify({
-                job: {
-                  title: job.title,
-                  seniority: job.seniority ?? 'not stated',
-                  location: job.location ?? 'not stated',
-                  mustHaveSkills: job.mustHaveSkills,
-                  niceToHaveSkills: job.niceToHaveSkills,
-                },
-                candidates: remaining.map((c) => ({ id: c.label, text: c.text })),
-              }),
-              schema: batchSchema,
-              mock: () => ({ results: remaining.map((c) => ({ ...mockScore(job, c), id: c.label })) }),
-              target: { jobId },
-              userId: userId ?? null,
-            });
+            const results = await askInGroups(remaining);
 
             // Only accept results for labels we actually sent (one each).
-            const byLabel = new Map(data.results.map((r) => [r.id.trim().toLowerCase(), r]));
+            const byLabel = new Map(results.map((r) => [r.id.trim().toLowerCase(), r]));
             const missed: typeof remaining = [];
             for (const c of remaining) {
               const r = byLabel.get(c.label);

@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createAi } from '../src/ai/client.js';
+import { AppError } from '../src/errors.js';
 import { createApp } from '../src/app.js';
 import { ensureRecruiter } from '../src/auth/recruiter.js';
 import { CandidateModel } from '../src/models/candidate.js';
@@ -222,6 +223,32 @@ describe('when the AI skips people', () => {
     expect(done?.progress?.failed).toBe(1);
     // They're left unscored (not given a made-up score), ready for the next run.
     expect(await CandidateModel.countDocuments({ jobId: job._id, score: null, scoreReason: null })).toBe(1);
+  });
+
+  it('splits a group when the AI answer is broken, and never stops the whole run', async () => {
+    const { job, events, task } = await setup(); // A, B, C
+    await addCandidates(job._id, 'csv', [{ name: 'D', email: 'd@example.com', profileText: 'React developer CONFUSING' }]);
+    const sizes: number[] = [];
+    const ai = {
+      mode: 'live',
+      async structured<T>(req: { user: string }) {
+        const { candidates } = JSON.parse(req.user) as { candidates: { id: string; text: string }[] };
+        sizes.push(candidates.length);
+        // Broken answer (like Groq's "Failed to parse tool call arguments as JSON") for
+        // groups bigger than 2, and always when D's text is in it.
+        if (candidates.length > 2 || candidates.some((c) => c.text.includes('CONFUSING'))) {
+          throw new AppError(502, 'AI_FAILED', "The AI couldn't answer this time. Please try again.");
+        }
+        return { data: { results: candidates.map((c) => ({ id: c.id, score: 70, reason: 'ok', evidence: [] })) } as T, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    } as unknown as Ai;
+    await scoreCandidatesProcessor({ ai, events })({ taskId: task.id, jobId: String(job._id) }, { number: 1, isLast: true });
+    // 4 -> 2 + 2 -> (A,B ok) + (C,D fails -> C ok, D fails) ; D's 2nd round fails again alone.
+    expect(sizes).toEqual([4, 2, 2, 1, 1, 1]);
+    expect(await CandidateModel.countDocuments({ jobId: job._id, score: 70 })).toBe(3);
+    const done = await TaskModel.findById(task.id).lean();
+    expect(done?.status).toBe('done');
+    expect(done?.message).toBe("Done: scored 3 of 4, 1 couldn't be scored this time (they'll be retried on the next scoring run).");
   });
 
   it('also scores people added while the run was already going', async () => {

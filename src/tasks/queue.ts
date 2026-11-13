@@ -90,7 +90,7 @@ export function startWorker(redisUrl: string, processors: Record<string, Process
   worker.on('failed', (job, err) => {
     // The real cause (e.g. what Groq said), if a friendly error wrapped it.
     const cause = (err as { cause?: unknown }).cause;
-    const detail = cause instanceof Error ? cause.message.slice(0, 300) : undefined;
+    const detail = cause instanceof Error ? cause.message.slice(0, 1000) : undefined;
     logger.warn({ type: job?.name, taskId: job?.data.taskId, attempt: job?.attemptsMade, reason: err.message, detail }, 'Task attempt failed');
   });
   return worker;
