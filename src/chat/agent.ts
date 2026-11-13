@@ -75,7 +75,7 @@ const MAX_MATCHES = 5;
 
 /** One compact line about a candidate, for the AI: "#14 of 31 | Sifat Islam | score 62 | sourced | reason". */
 function candidateLine(
-  c: { id: string; name: string; score?: number | null; status: string; scoreReason?: string | null },
+  c: { id: string; name: string; email?: string | null; score?: number | null; status: string; scoreReason?: string | null },
   ranks: Map<string, number>,
   total: number,
 ): string {
@@ -84,6 +84,8 @@ function candidateLine(
     rank ? `#${rank} of ${total}` : 'no rank (not scored)',
     clean(c.name, 60),
     `score ${c.score ?? 'not scored'}`,
+    // Whether we have a way to email them (web search results never include one).
+    c.email ? `email ${clean(c.email, 80)}` : 'no email',
     c.status,
     ...(c.scoreReason ? [clean(c.scoreReason, 100)] : []),
   ].join(' | ');
@@ -481,25 +483,29 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
-      async ({ jobId: id, fromRank }) => {
+      async ({ jobId: id, fromRank, email }) => {
         let found;
         try {
           found = await resolveJob(id); // accepts JOB-0007 or the long id
         } catch {
           return `There is no job "${id}". Check the job id in the workspace data.`;
         }
-        const candidates = await listCandidates(String(found._id)); // best score first, unscored last
-        if (candidates.length === 0) return 'This job has no candidates yet.';
+        const everyone = await listCandidates(String(found._id)); // best score first, unscored last
+        if (everyone.length === 0) return 'This job has no candidates yet.';
+        // Optional filter: only people whose email we have ("found"), or don't have ("missing").
+        const candidates = email ? everyone.filter((c) => (email === 'found' ? Boolean(c.email) : !c.email)) : everyone;
+        const which = email === 'found' ? ' with an email found' : email === 'missing' ? ' without an email' : '';
+        if (candidates.length === 0) return `No candidates${which} in this job (${everyone.length} in total).`;
         const { ranks, total } = await candidateRanks(found._id);
         // Compact on purpose (context budget): 10 per page with short reasons. The AI asks for
         // the next page (fromRank 11, 21…) when the recruiter wants more.
         const start = Math.max(0, (fromRank ?? 1) - 1);
         const page = candidates.slice(start, start + PAGE_SIZE);
-        if (page.length === 0) return `This job has only ${candidates.length} candidates.`;
+        if (page.length === 0) return `This job has only ${candidates.length} candidates${which}.`;
         const lines = page.map((c) => candidateLine(c, ranks, total));
         const after = candidates.length - (start + page.length);
         return [
-          `Candidates ${start + 1}-${start + page.length} of ${candidates.length} (${total} scored):`,
+          `Candidates${which} ${start + 1}-${start + page.length} of ${candidates.length}${which ? ` (out of ${everyone.length} in the job)` : ''} (${total} scored in the job; ranks are among all of them):`,
           ...lines,
           ...(after > 0 ? [`(${after} more: call again with fromRank ${start + page.length + 1}, or use find_candidate for a name)`] : []),
         ].join('\n');
@@ -507,10 +513,11 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       {
         name: 'list_job_candidates',
         description:
-          "List a job's candidates, best score first, 10 at a time, with rank, score, status and reason. fromRank 11 gives the next 10, and so on. To look up ONE person, use find_candidate instead.",
+          "List a job's candidates, best score first, 10 at a time, with rank, score, email (or \"no email\"), status and reason. fromRank 11 gives the next 10, and so on. To look up ONE person, use find_candidate instead. Use email=\"found\" or \"missing\" when the recruiter asks whose email we have or don't have.",
         schema: z.object({
           jobId: z.string().describe('The job id, e.g. "JOB-0007"'),
           fromRank: z.number().int().min(1).optional().describe('Start at this position (1 = the best). Default 1.'),
+          email: z.enum(['found', 'missing']).optional().describe('Only candidates whose email was found, or only those without one'),
         }),
       },
     ),

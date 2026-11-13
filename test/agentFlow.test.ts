@@ -96,5 +96,20 @@ describe('chat agent: AI calls per message', () => {
     expect(result.reply).toBe(`Here's a card to delete all 3 candidates of JOB-0001 "Dev". The job itself stays.\n\n${DELETE_CARD_FOOTER}`);
     expect(await CandidateModel.countDocuments({ jobId: job._id })).toBe(3); // nothing deleted yet
   });
+
+  it('answers whose email was found: the list shows emails and can be filtered', async () => {
+    const { job, userId } = await setup(); // Sara Ahmed, Sara Khan, Rafi Karim (all with emails)
+    await CandidateModel.create({ jobId: job._id, source: 'web', name: 'Web Person', profileUrl: 'https://www.linkedin.com/in/web-person', score: 60 });
+    const { ai, seen } = scriptedAi([call('list_job_candidates', { jobId: 'JOB-0001', email: 'missing' }), new AIMessage('Only Web Person has no email.')]);
+    await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'whose email is missing?' });
+    const toolResult = String(seen[1]!.find((m) => m instanceof ToolMessage)?.content);
+    expect(toolResult).toMatch(/^Candidates without an email 1-1 of 1 \(out of 4 in the job\)/);
+    expect(toolResult).toMatch(/#3 of 4 \| Web Person \| score 60 \| no email/);
+    expect(toolResult).not.toMatch(/Sara/);
+
+    const all = scriptedAi([call('list_job_candidates', { jobId: 'JOB-0001' }), new AIMessage('ok')]);
+    await runAgent({ ai: all.ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'list them' });
+    expect(String(all.seen[1]!.find((m) => m instanceof ToolMessage)?.content)).toMatch(/Sara Ahmed \| score 90 \| email sara@example.com/);
+  });
 });
 
