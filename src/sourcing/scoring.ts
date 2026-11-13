@@ -30,8 +30,9 @@ import type { Processor } from '../tasks/queue.js';
 import { updateTask } from '../tasks/service.js';
 
 export const BATCH_SIZE = 10;
-// Keeps a batch of 10 well under the free tier's 8,000 tokens per minute.
-const MAX_PROFILE_CHARS = 1000;
+// Enough for a full profile (summary + skills + experience), while a batch of 10 still fits
+// under the free tier's 8,000 tokens per minute (~4k tokens in, ~1.5k out).
+const MAX_PROFILE_CHARS = 1500;
 
 const batchSchema = z.object({
   results: z.array(
