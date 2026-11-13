@@ -12,7 +12,7 @@
  * (For PATCH/DELETE, ":id" can be the long id or the short one, e.g. JOB-0007.)
  */
 import { Router } from 'express';
-import { deleteCandidate } from '../candidates/deleteCandidate.js';
+import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { asyncHandler } from '../errors.js';
 import {
   createJob,
@@ -68,6 +68,16 @@ export function jobsRouter(): Router {
     asyncHandler(async (req, res) => {
       const result = await deleteJob(req.params.id as string, { userId: req.user!.id });
       req.log.info({ jobId: result.id }, 'Job deleted');
+      res.json(result);
+    }),
+  );
+
+  // Remove ALL candidates of the job ("Delete all" on the Candidates tab; asks first in the UI).
+  router.delete(
+    '/:id/candidates',
+    asyncHandler(async (req, res) => {
+      const result = await deleteAllCandidates(req.params.id as string, { userId: req.user!.id });
+      req.log.info(result, 'All candidates removed');
       res.json(result);
     }),
   );

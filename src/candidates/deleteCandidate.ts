@@ -43,3 +43,28 @@ export async function deleteCandidate(
   });
   return { jobId: String(job._id), jobCode: jobCode(job.jobNumber), candidateId: String(candidate._id), name: candidate.name };
 }
+
+/**
+ * Removes ALL candidates of a job (the "Delete all" button on the Candidates tab). The job
+ * itself stays. Pending chat cards about this job's candidates (remove / score again) are
+ * cancelled, and the activity log keeps one line: who removed how many.
+ */
+export async function deleteAllCandidates(jobRef: string, { userId, actor = 'recruiter' }: { userId: string; actor?: 'recruiter' | 'ai' }) {
+  const job = await resolveJob(jobRef);
+  const { deletedCount } = await CandidateModel.deleteMany({ jobId: job._id });
+  await PendingActionModel.updateMany(
+    { status: 'pending', type: { $in: ['delete_candidate', 'score_candidates'] }, 'payload.jobId': String(job._id) },
+    { $set: { status: 'cancelled', decidedAt: new Date() } },
+  );
+  if (deletedCount > 0) {
+    await ActivityModel.create({
+      jobId: job._id,
+      type: 'candidate_deleted',
+      actor,
+      userId: new Types.ObjectId(userId),
+      message: `Removed all ${deletedCount} candidate${deletedCount === 1 ? '' : 's'}`,
+    });
+  }
+  return { jobId: String(job._id), jobCode: jobCode(job.jobNumber), deleted: deletedCount };
+}
+
