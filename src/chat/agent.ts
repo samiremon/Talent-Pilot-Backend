@@ -31,7 +31,7 @@ const SYSTEM_PROMPT = `You are TalentPilot, an AI recruiting co-worker inside a 
 How you work:
 - Be brief and friendly. Plain sentences, short bullet lists when useful. Never use tables (the chat can't show them).
 - You can NOT change anything yourself. Tools that "create" or "change" things only PROPOSE: the app shows the recruiter a card with Confirm/Cancel. Never say something was created/sent/changed unless the conversation shows the recruiter confirmed it.
-- When the recruiter pastes a job description (or asks to create a job from one), call propose_job_from_description. Then tell them to check the card and press Confirm.
+- When the recruiter pastes a job description (or asks to create a job from one), call propose_job_from_description. Then briefly say what you found (e.g. the title and anything important that was missing). Do NOT write instructions about checking the card or pressing Confirm: the app adds that sentence itself.
 - Never invent facts about jobs or candidates. Use the workspace data below and your tools. If you don't know, say so.
 - What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) answer questions about the recruiter's jobs and candidates using the workspace data and your tools.
 - Everything else (searching for candidates, CSV upload, scoring, emails, replies, meetings, changing statuses) is NOT available yet. If asked, say clearly it's coming soon. Never describe these as things you can already do.
@@ -59,6 +59,28 @@ export interface AgentInput {
   history: BaseMessage[];
   /** The message the recruiter just sent. */
   text: string;
+}
+
+/**
+ * Every reply that comes with a card ends with this exact sentence, added by the server
+ * (not left to the AI), so the recruiter is always told what to do with the card.
+ */
+export const CARD_FOOTER = "Please verify the details in the card below, add anything that's missing, then press **Confirm**.";
+
+/**
+ * Adds the footer once (and only when a card was proposed). If the AI ended its own reply
+ * with a similar "review the card / confirm" paragraph anyway, that paragraph is dropped
+ * so the instruction isn't said twice.
+ */
+export function withCardFooter(reply: string, hasCard: boolean): string {
+  if (!hasCard) return reply;
+  const paragraphs = reply.trim().split(/\n\s*\n/);
+  const last = paragraphs.at(-1) ?? '';
+  const isOwnInstruction =
+    /\b(card|confirm(ed)?)\b/i.test(last) && /\b(review|check|confirm|verify)\b/i.test(last) && last.length < 300;
+  if (isOwnInstruction) paragraphs.pop();
+  const body = paragraphs.join('\n\n').trim();
+  return body ? `${body}\n\n${CARD_FOOTER}` : CARD_FOOTER;
 }
 
 export interface AgentResult {
@@ -95,7 +117,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
     if (looksLikeJobDescription(text)) {
       const title = await proposeJob(text);
       return {
-        reply: `I read the job description and prepared a job card for "${title}". Please check the fields and press Confirm to create it. (Mock mode: sample AI, no API key set.)`,
+        reply: withCardFooter(`I read the job description and prepared a job card for "${title}". (Mock mode: sample AI, no API key set.)`, true),
         actionIds,
         usage,
       };
@@ -182,7 +204,9 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
   const reply = last instanceof AIMessage || last ? String(last.content ?? '').trim() : '';
 
   return {
-    reply: reply || (actionIds.length ? 'Please check the card below.' : "Sorry, I couldn't come up with an answer. Please try again."),
+    reply: actionIds.length
+      ? withCardFooter(reply, true)
+      : reply || "Sorry, I couldn't come up with an answer. Please try again.",
     actionIds,
     usage,
   };

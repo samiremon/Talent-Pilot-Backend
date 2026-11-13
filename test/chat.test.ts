@@ -5,6 +5,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { CARD_FOOTER, withCardFooter } from '../src/chat/agent.js';
 import { ensureRecruiter } from '../src/auth/recruiter.js';
 import { ActivityModel } from '../src/models/activity.js';
 import { JobModel } from '../src/models/job.js';
@@ -42,6 +43,7 @@ describe('chat', () => {
     const res = await agent.post('/chat/messages').send({ text: 'hello' }).expect(200);
     expect(res.body.messages.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant']);
     expect(res.body.messages[1].card).toBeNull();
+    expect(res.body.messages[1].text).not.toContain('Please verify the details');
   });
 
   it('turns a pasted job description into a card, and creates NOTHING yet', async () => {
@@ -49,6 +51,8 @@ describe('chat', () => {
     const res = await agent.post('/chat/messages').send({ text: JD }).expect(200);
     const card = res.body.messages[1].card;
     expect(card).toMatchObject({ type: 'create_job', status: 'pending' });
+    // A reply with a card always ends with the instruction to verify it.
+    expect(res.body.messages[1].text).toMatch(/Please verify the details in the card below, add anything that's missing, then press \*\*Confirm\*\*\.$/);
     expect(card.payload).toMatchObject({ title: 'Senior React Developer', location: 'Dhaka', remotePolicy: 'hybrid' });
     expect(await JobModel.countDocuments()).toBe(0); // the AI did not create the job
   });
@@ -108,5 +112,18 @@ describe('chat', () => {
     expect((await other.get('/chat/messages').expect(200)).body.messages).toHaveLength(0);
     await other.post(`/chat/actions/${body.messages[1].card.id}/confirm`).send({}).expect(404);
     expect(await JobModel.countDocuments()).toBe(0);
+  });
+});
+
+describe('card footer', () => {
+  it('replaces the AI\'s own "review the card" ending with the standard sentence', () => {
+    const reply = 'I made a job card for Senior React Developer.\n\nYou can review the card and confirm when ready.';
+    expect(withCardFooter(reply, true)).toBe(`I made a job card for Senior React Developer.\n\n${CARD_FOOTER}`);
+  });
+
+  it('keeps useful last paragraphs, and does nothing without a card', () => {
+    const reply = 'I made a job card.\n\nNote: the salary was not in the description.';
+    expect(withCardFooter(reply, true)).toBe(`${reply}\n\n${CARD_FOOTER}`);
+    expect(withCardFooter('Hello!', false)).toBe('Hello!');
   });
 });
