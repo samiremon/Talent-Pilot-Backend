@@ -129,3 +129,16 @@ describe('the rulebook itself', () => {
     expect(isCandidateStatus(42)).toBe(false);
   });
 });
+
+describe('Not accepted (review) vs Rejected (after the interview)', () => {
+  it('reviews with Not accepted, both ways; Rejected only after the interview', async () => {
+    const { checkMove } = await import('../src/pipeline/status.js');
+    expect(checkMove('sourced', 'not_accepted').allowed).toBe(true);
+    expect(checkMove('accepted', 'not_accepted').allowed).toBe(true);
+    expect(checkMove('not_accepted', 'accepted').allowed).toBe(true); // changed their mind
+    expect(checkMove('sourced', 'rejected').allowed).toBe(false); // review uses Not accepted
+    expect(checkMove('contacted', 'rejected').allowed).toBe(false);
+    expect(checkMove('interviewed', 'rejected').allowed).toBe(true);
+    expect(checkMove('shortlisted', 'rejected').allowed).toBe(true);
+  });
+});

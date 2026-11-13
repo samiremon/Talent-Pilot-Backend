@@ -484,7 +484,7 @@ describe('review and status changes', () => {
 
   it('gives a candidate\'s timeline: the path through the statuses and every event, undone ones marked', async () => {
     const { agent, job, a } = await setupJob();
-    const accept = await agent.post(`/jobs/${job.id}/candidates/status`).send({ candidateIds: [String(a._id)], to: 'rejected' }).expect(200);
+    const accept = await agent.post(`/jobs/${job.id}/candidates/status`).send({ candidateIds: [String(a._id)], to: 'not_accepted' }).expect(200);
     await agent.post(`/jobs/${job.id}/activity/${accept.body.changed[0].activityId}/undo`).send({}).expect(200);
     await agent.post(`/jobs/${job.id}/candidates/status`).send({ candidateIds: [String(a._id)], to: 'accepted' }).expect(200);
     await agent.patch(`/jobs/${job.id}/candidates/${a._id}`).send({ profileUrl: 'linkedin.com/in/ana' }).expect(200);
@@ -493,7 +493,7 @@ describe('review and status changes', () => {
     expect(t.path.map((p: { label: string }) => p.label)).toEqual(['Sourced', 'Accepted']); // the undone Reject isn't in the path
     expect(t.events.map((e: { text: string; undone: boolean; by: string | null }) => [e.text, e.undone, e.by])).toEqual([
       ['Added from a CSV upload', false, null],
-      ['Sourced → Rejected', true, 'Rina'],
+      ['Sourced → Not accepted', true, 'Rina'],
       ['undo, back to Sourced', false, 'Rina'],
       ['Sourced → Accepted', false, 'Rina'],
       ["Updated Ana's profile link", false, 'Rina'],

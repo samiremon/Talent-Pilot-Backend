@@ -1,5 +1,6 @@
 import type { Server } from 'node:http';
 import { createAi } from './ai/client.js';
+import { migrateReviewRejections } from './pipeline/migrations.js';
 import { createSearchClient } from './sourcing/search.js';
 import { createApp } from './app.js';
 import { ensureRecruiter } from './auth/recruiter.js';
@@ -32,6 +33,9 @@ async function start(): Promise<void> {
 
   // Jobs created before job numbers existed get one now (JOB-0001, ...), oldest first.
   const numbered = await ensureJobNumbers();
+  // Review decisions are now "Not accepted" ("Rejected" is for after the interview).
+  const reviewFixed = await migrateReviewRejections();
+  if (reviewFixed) logger.info({ candidates: reviewFixed }, 'Review rejections renamed to Not accepted');
   if (numbered > 0) logger.info({ count: numbered }, 'Gave job numbers to existing jobs');
 
   // A brand-new database gets the recruiter account from .env automatically,

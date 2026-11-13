@@ -4,11 +4,14 @@
  * The journey (from the assignment):
  *
  *   Sourced ─┬─> Accepted ──> Contacted ──> Replied ─┬─> Interested ──> Meeting booked
- *            └─> Rejected                            └─> Not interested
+ *            └─> Not accepted                        └─> Not interested
+ *                (Review: Accepted <-> Not accepted, either way, until they're contacted)
  *
- *   Meeting booked ──> Interviewed ──> Shortlisted ──> Hired
+ *   Meeting booked ──> Interviewed ─┬─> Shortlisted ─┬─> Hired
+ *                                   └─> Rejected     └─> Rejected
  *
- *   + "Rejected" is possible at most stages (the recruiter can say no at any point).
+ *   + "Not accepted" is the REVIEW decision (not a fit, we won't contact them).
+ *     "Rejected" is the decision AFTER the interview.
  *   + "Unsubscribed" is possible at any point AFTER Contacted, and stops all emails.
  *
  * Every status change in the app (buttons, chat, AI, background jobs) goes through
@@ -23,6 +26,7 @@
 export const CANDIDATE_STATUSES = [
   'sourced',
   'accepted',
+  'not_accepted',
   'rejected',
   'contacted',
   'replied',
@@ -41,6 +45,7 @@ export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 export const STATUS_LABELS: Record<CandidateStatus, string> = {
   sourced: 'Sourced',
   accepted: 'Accepted',
+  not_accepted: 'Not accepted',
   rejected: 'Rejected',
   contacted: 'Contacted',
   replied: 'Replied',
@@ -58,18 +63,21 @@ export const STATUS_LABELS: Record<CandidateStatus, string> = {
  * An empty list means it's a final status (Hired, Rejected, Unsubscribed).
  */
 export const ALLOWED_MOVES: Record<CandidateStatus, readonly CandidateStatus[]> = {
-  // Review: the recruiter accepts or rejects each sourced candidate.
-  sourced: ['accepted', 'rejected'],
+  // Review: the recruiter accepts each sourced candidate, or marks them "Not accepted".
+  sourced: ['accepted', 'not_accepted'],
   // Accepted candidates get emailed (-> Contacted), or the recruiter changes their mind.
-  accepted: ['contacted', 'rejected'],
+  accepted: ['contacted', 'not_accepted'],
+  // ...and back: a "Not accepted" candidate can be accepted after all.
+  not_accepted: ['accepted'],
   // After the first email, we wait for a reply. They may unsubscribe instead.
-  contacted: ['replied', 'unsubscribed', 'rejected'],
+  contacted: ['replied', 'unsubscribed'],
   // The AI reads the reply and decides. "Wants a meeting" can go straight to Meeting booked.
-  replied: ['interested', 'not_interested', 'meeting_booked', 'unsubscribed', 'rejected'],
-  interested: ['meeting_booked', 'not_interested', 'unsubscribed', 'rejected'],
+  replied: ['interested', 'not_interested', 'meeting_booked', 'unsubscribed'],
+  interested: ['meeting_booked', 'not_interested', 'unsubscribed'],
   // People change their minds: a "not interested" candidate may write back interested.
-  not_interested: ['interested', 'unsubscribed', 'rejected'],
-  meeting_booked: ['interviewed', 'unsubscribed', 'rejected'],
+  not_interested: ['interested', 'unsubscribed'],
+  meeting_booked: ['interviewed', 'unsubscribed'],
+  // After the interview: Rejected is the recruiter's "no" from here on.
   interviewed: ['shortlisted', 'unsubscribed', 'rejected'],
   shortlisted: ['hired', 'unsubscribed', 'rejected'],
   // Final statuses.
@@ -79,7 +87,7 @@ export const ALLOWED_MOVES: Record<CandidateStatus, readonly CandidateStatus[]> 
 };
 
 /** Statuses where no more emails may be sent to the candidate. */
-export const NO_EMAIL_STATUSES: readonly CandidateStatus[] = ['rejected', 'unsubscribed', 'not_interested', 'hired'];
+export const NO_EMAIL_STATUSES: readonly CandidateStatus[] = ['not_accepted', 'rejected', 'unsubscribed', 'not_interested', 'hired'];
 
 export function isCandidateStatus(value: unknown): value is CandidateStatus {
   return typeof value === 'string' && (CANDIDATE_STATUSES as readonly string[]).includes(value);

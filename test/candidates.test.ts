@@ -141,11 +141,11 @@ describe('status changes', () => {
 
   it('can undo a change once, back to the previous status', async () => {
     const candidate = await makeCandidate();
-    const { activity } = await changeCandidateStatus({ candidateId: candidate._id, to: 'rejected', actor: 'recruiter' });
+    const { activity } = await changeCandidateStatus({ candidateId: candidate._id, to: 'not_accepted', actor: 'recruiter' });
 
     const undo = await undoStatusChange({ activityId: activity._id, actor: 'recruiter' });
     expect(undo.candidate.status).toBe('sourced');
-    expect(undo.activity).toMatchObject({ type: 'status_undone', fromStatus: 'rejected', toStatus: 'sourced' });
+    expect(undo.activity).toMatchObject({ type: 'status_undone', fromStatus: 'not_accepted', toStatus: 'sourced' });
     expect((await ActivityModel.findById(activity._id))?.undone).toBe(true);
 
     await expect(undoStatusChange({ activityId: activity._id, actor: 'recruiter' })).rejects.toThrow(/already been undone/);
@@ -160,5 +160,28 @@ describe('status changes', () => {
       /Undo the newer change first/,
     );
     expect((await CandidateModel.findById(candidate._id))?.status).toBe('contacted');
+  });
+});
+
+describe('renaming old review rejections', () => {
+  it('turns "Rejected" from Sourced/Accepted into "Not accepted" (and leaves later rejections alone)', async () => {
+    const { Types } = await import('mongoose');
+    const { CandidateModel } = await import('../src/models/candidate.js');
+    const { ActivityModel } = await import('../src/models/activity.js');
+    const { migrateReviewRejections } = await import('../src/pipeline/migrations.js');
+    const jobId = new Types.ObjectId();
+    const [early, late] = await CandidateModel.insertMany([
+      { jobId, source: 'csv', name: 'Early', email: 'e@example.com', status: 'rejected' },
+      { jobId, source: 'csv', name: 'Late', email: 'l@example.com', status: 'rejected' },
+    ]);
+    await ActivityModel.insertMany([
+      { jobId, candidateId: early!._id, type: 'status_changed', actor: 'recruiter', message: 'Early: Accepted → Rejected', fromStatus: 'accepted', toStatus: 'rejected' },
+      { jobId, candidateId: late!._id, type: 'status_changed', actor: 'recruiter', message: 'Late: Interviewed → Rejected', fromStatus: 'interviewed', toStatus: 'rejected' },
+    ]);
+    expect(await migrateReviewRejections()).toBe(1);
+    expect((await CandidateModel.findById(early!._id).lean())?.status).toBe('not_accepted');
+    expect((await CandidateModel.findById(late!._id).lean())?.status).toBe('rejected');
+    expect((await ActivityModel.findOne({ candidateId: early!._id }).lean())?.message).toBe('Early: Accepted → Not accepted');
+    expect(await migrateReviewRejections()).toBe(0); // safe to run again
   });
 });
