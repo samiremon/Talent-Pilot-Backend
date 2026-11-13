@@ -7,7 +7,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import { retryAfterMs } from '../src/ai/client.js';
+import { describeRateLimit, rateLimitMessage, retryAfterMs } from '../src/ai/client.js';
 import { groundInText } from '../src/ai/extractJob.js';
 import { ensureRecruiter } from '../src/auth/recruiter.js';
 import { AiUsageModel } from '../src/models/aiUsage.js';
@@ -129,5 +129,26 @@ describe('Groq rate limits', () => {
     expect(retryAfterMs(groq429('Please try again in 1m2.5s.'))).toBe(62_500);
     expect(retryAfterMs(groq429('Too many requests'))).toBe(5000); // no hint: a sensible default
     expect(retryAfterMs(Object.assign(new Error('Bad request'), { status: 400 }))).toBeNull();
+  });
+});
+
+describe('clear messages for Groq limits', () => {
+  const groq429 = (text: string) => Object.assign(new Error(text), { status: 429 });
+
+  it('says which limit was hit and how long to wait', () => {
+    const tpm = describeRateLimit(
+      groq429('Rate limit reached for model `openai/gpt-oss-120b` ... on tokens per minute (TPM): Limit 8000, Used 7036, Requested 3314. Please try again in 17.625s.'),
+    )!;
+    expect(tpm).toEqual({ kind: 'TPM', limit: 8000, waitMs: 17_625 });
+    expect(rateLimitMessage(tpm)).toBe(
+      "You've used this minute's AI token limit (8,000 tokens a minute on Groq's free tier). Please wait about 18 seconds and try again. You can check your AI usage in Activity → Remaining usage.",
+    );
+
+    const rpd = describeRateLimit(groq429('... on requests per day (RPD): Limit 1000, Used 1000. Please try again in 1m26.4s.'))!;
+    expect(rateLimitMessage(rpd)).toMatch(/^The AI's daily request limit is used up \(1,000 requests a day\)\. It frees up again in about 87 seconds\./);
+  });
+
+  it('ignores errors that are not rate limits', () => {
+    expect(describeRateLimit(Object.assign(new Error('Bad request'), { status: 400 }))).toBeNull();
   });
 });

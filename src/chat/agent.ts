@@ -19,7 +19,8 @@ import { tool } from '@langchain/core/tools';
 import { END, MessagesAnnotation, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { z } from 'zod';
-import type { Ai, TokenUsage } from '../ai/client.js';
+import { describeRateLimit, toAppError, type Ai, type TokenUsage } from '../ai/client.js';
+import { AppError } from '../errors.js';
 import { extractJob } from '../ai/extractJob.js';
 import { recordUsage } from '../ai/usage.js';
 import { buildAssistantContext, clean } from '../assistant/context.js';
@@ -336,7 +337,24 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
     .compile();
 
   // recursionLimit stops a confused model from looping on tools forever.
-  const result = await graph.invoke({ messages: [...history, new HumanMessage(text)] }, { recursionLimit: 8 });
+  // Groq free-tier limits: if Groq asks us to wait a short time (<= 25 s), wait and try
+  // once more (the recruiter just sees the typing dots a bit longer). Otherwise, or if it
+  // fails again, answer with a clear message saying WHICH limit was hit and for how long.
+  const run = () => graph.invoke({ messages: [...history, new HumanMessage(text)] }, { recursionLimit: 8 });
+  let result;
+  try {
+    result = await run();
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    const limit = describeRateLimit(err);
+    if (!limit || limit.waitMs > 25_000) throw toAppError(err);
+    await new Promise((r) => setTimeout(r, limit.waitMs + 500));
+    try {
+      result = await run();
+    } catch (again) {
+      throw again instanceof AppError ? again : toAppError(again);
+    }
+  }
   const last = result.messages.at(-1);
   const reply = last instanceof AIMessage || last ? String(last.content ?? '').trim() : '';
 

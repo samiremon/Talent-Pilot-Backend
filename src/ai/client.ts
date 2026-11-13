@@ -90,15 +90,60 @@ function estimateTokens(text: string): number {
  * Turns Groq failures into clear messages for the recruiter. The original error is kept as
  * `cause` (standard JavaScript), so logs can show the real reason without users seeing it.
  */
-function toAppError(err: unknown): AppError {
+export function toAppError(err: unknown): AppError {
   const friendly = toFriendlyError(err);
   (friendly as { cause?: unknown }).cause = err;
   return friendly;
 }
 
+/** "about 18 seconds" / "about 3 minutes" / "about 2 hours" */
+function roughly(ms: number): string {
+  const s = Math.max(1, Math.ceil(ms / 1000));
+  if (s < 90) return `about ${s} second${s === 1 ? '' : 's'}`;
+  const m = Math.ceil(s / 60);
+  if (m < 90) return `about ${m} minute${m === 1 ? '' : 's'}`;
+  return `about ${Math.ceil(m / 60)} hours`;
+}
+
+/**
+ * Which Groq limit was hit, from its 429 message, e.g. "... on tokens per minute (TPM):
+ * Limit 8000, Used 7036, Requested 3314. Please try again in 17.625s."
+ */
+export function describeRateLimit(err: unknown): { kind: 'TPM' | 'TPD' | 'RPM' | 'RPD' | 'unknown'; limit: number | null; waitMs: number } | null {
+  const waitMs = retryAfterMs(err);
+  if (waitMs === null) return null;
+  const text = err instanceof Error ? err.message : String(err);
+  const kind = (/\((TPM|TPD|RPM|RPD)\)/.exec(text)?.[1] ?? 'unknown') as 'TPM' | 'TPD' | 'RPM' | 'RPD' | 'unknown';
+  const limit = Number(/Limit (\d+)/.exec(text)?.[1]) || null;
+  return { kind, limit, waitMs };
+}
+
+/** A clear, specific sentence for each kind of Groq limit. */
+export function rateLimitMessage(info: NonNullable<ReturnType<typeof describeRateLimit>>): string {
+  const wait = roughly(info.waitMs);
+  const n = info.limit ? info.limit.toLocaleString('en-US') : null;
+  const where = 'You can check your AI usage in Activity → Remaining usage.';
+  switch (info.kind) {
+    case 'TPM':
+      return `You've used this minute's AI token limit${n ? ` (${n} tokens a minute on Groq's free tier)` : ''}. Please wait ${wait} and try again. ${where}`;
+    case 'RPM':
+      return `Too many AI requests this minute${n ? ` (limit ${n} a minute)` : ''}. Please wait ${wait} and try again. ${where}`;
+    case 'TPD':
+      return `The AI's daily token limit is used up${n ? ` (${n} tokens a day on Groq's free tier)` : ''}. It frees up again in ${wait}. ${where}`;
+    case 'RPD':
+      return `The AI's daily request limit is used up${n ? ` (${n} requests a day)` : ''}. It frees up again in ${wait}. ${where}`;
+    default:
+      return `The AI's usage limit was reached. Please wait ${wait} and try again. ${where}`;
+  }
+}
+
 function toFriendlyError(err: unknown): AppError {
   const status = (err as { status?: number; response?: { status?: number } }).status ??
     (err as { response?: { status?: number } }).response?.status;
+  const limit = describeRateLimit(err);
+  if (limit) {
+    return new AppError(503, 'AI_RATE_LIMIT', rateLimitMessage(limit), { kind: limit.kind, retryAfterSeconds: Math.ceil(limit.waitMs / 1000) });
+  }
   if (status === 429) {
     return new AppError(503, 'AI_BUSY', 'The AI is busy right now (free-tier limit reached). Please try again in a minute.');
   }
