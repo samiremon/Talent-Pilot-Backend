@@ -19,8 +19,12 @@ import { attachCsv } from './attachments.js';
 import { postScoringFollowUp } from './followUp.js';
 import { addSystemNote, listMessages, sendMessage } from './service.js';
 
+// 12,000 characters ≈ 3,000 tokens: plenty for a long job description (usually 2,000-5,000),
+// and small enough to fit in one minute of Groq's free-tier token limit with everything else.
+export const MAX_MESSAGE_CHARS = 12_000;
+
 const sendBody = z.object({
-  text: z.string().trim().min(1, 'is empty').max(50_000, 'is too long'),
+  text: z.string().trim().min(1, 'is empty'),
   jobId: z.string().optional(),
 });
 const confirmBody = z.object({ fields: z.record(z.string(), z.unknown()).optional() });
@@ -50,6 +54,13 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
     chatLimiter,
     asyncHandler(async (req, res) => {
       const { text, jobId } = sendBody.parse(req.body);
+      if (text.length > MAX_MESSAGE_CHARS) {
+        throw new AppError(
+          400,
+          'MESSAGE_TOO_LONG',
+          `This message is too long for the AI (${text.length.toLocaleString('en-US')} characters, max ${MAX_MESSAGE_CHARS.toLocaleString('en-US')}: about 4 pages). Please shorten it, e.g. paste only the job description itself.`,
+        );
+      }
       const result = await sendMessage(ai, req.user!.id, text, jobId);
       req.log.info({ tokens: result.usage.inputTokens + result.usage.outputTokens }, 'Chat answered');
       res.json(result);

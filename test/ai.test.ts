@@ -152,3 +152,21 @@ describe('clear messages for Groq limits', () => {
     expect(describeRateLimit(Object.assign(new Error('Bad request'), { status: 400 }))).toBeNull();
   });
 });
+
+describe('token budget check before each AI call', () => {
+  it('works out what has refilled since the last call and how long until a call fits', async () => {
+    const { tokenBudgetWait } = await import('../src/ai/budget.js');
+    const { RateLimitSnapshotModel } = await import('../src/ai/rateLimits.js');
+    const t0 = Date.parse('2026-11-13T12:00:00Z');
+    // Last call left 1,000 of 8,000 tokens.
+    await RateLimitSnapshotModel.create({ _id: 'm', limitTokens: 8000, remainingTokens: 1000, updatedAt: new Date(t0) });
+
+    expect(await tokenBudgetWait('m', 900, t0)).toEqual({ waitMs: 0, limit: 8000 }); // fits now
+    // Needs 3,000: 2,000 short; refills at 8,000/min (133.3/s) -> 15 s.
+    expect(await tokenBudgetWait('m', 3000, t0)).toEqual({ waitMs: 15_000, limit: 8000 });
+    // 15 s later it fits.
+    expect(await tokenBudgetWait('m', 3000, t0 + 15_000)).toEqual({ waitMs: 0, limit: 8000 });
+    // Unknown model (no call yet): no opinion, the call just goes ahead.
+    expect(await tokenBudgetWait('other', 3000, t0)).toBeNull();
+  });
+});

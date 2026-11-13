@@ -20,8 +20,10 @@ import { runAgent } from './agent.js';
  *   - long OLD messages (pasted job descriptions...) are shortened to a one-line note;
  *     the full text stays in the database and the JD tool still reads it
  */
-const HISTORY_TOKEN_BUDGET = 3000;
-const HISTORY_MAX_MESSAGES = 30;
+// Sized for Groq's free tier (8,000 tokens a minute, shared by every AI call): the history
+// is re-sent with each call, so it has to stay small.
+const HISTORY_TOKEN_BUDGET = 1500;
+const HISTORY_MAX_MESSAGES = 20;
 const LONG_MESSAGE_CHARS = 600;
 
 type StoredMessage = {

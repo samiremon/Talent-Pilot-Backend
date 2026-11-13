@@ -29,8 +29,9 @@
 import { listActivity, listJobs } from '../jobs/service.js';
 import { STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 
-/** ~4 characters per token: 6,000 characters ≈ 1,500 tokens. */
-const MAX_CHARS = 6000;
+/** ~4 characters per token: 3,000 characters ≈ 750 tokens (sent with every AI call, and
+ *  Groq's free tier allows 8,000 tokens a minute). */
+const MAX_CHARS = 3000;
 const MAX_OTHER_JOBS = 10;
 
 /** "2026-11-13T10:42:05.123Z" -> "2026-11-13 10:42 UTC" (short, unambiguous). */
@@ -66,7 +67,7 @@ export interface ContextOptions {
   activityLimit?: number;
 }
 
-export async function buildAssistantContext({ jobId, currentUserId, activityLimit = 15 }: ContextOptions = {}): Promise<string> {
+export async function buildAssistantContext({ jobId, currentUserId, activityLimit = 8 }: ContextOptions = {}): Promise<string> {
   const [jobs, activity] = await Promise.all([listJobs(), listActivity(jobId ? { jobId } : {}, activityLimit)]);
 
   // The open job first (in full), then the newest others.
