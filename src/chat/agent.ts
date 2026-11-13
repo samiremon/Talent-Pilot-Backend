@@ -32,6 +32,7 @@ import { candidateRanks, getJob, listCandidates, resolveJob, unscoredFilter, upd
 import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
+import { CANDIDATE_STATUSES, checkMove, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 import { jobCode } from '../models/counter.js';
 import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
@@ -47,7 +48,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For ANY question about candidates' emails (who has one, who doesn't), use list_candidate_emails.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): emails, replies, meetings, status changes. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept/reject candidates or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. Not available yet (say "coming soon"): outreach emails, replies, meetings. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -438,6 +439,63 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             location: z.string().optional(),
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
+        }),
+      },
+    ),
+    tool(
+      async ({ job, to, names, top }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const everyone = await listCandidates(String(found._id)); // best score first
+        const { ranks } = await candidateRanks(found._id);
+        let picked: typeof everyone = [];
+        const notes: string[] = [];
+        if (names?.length) {
+          for (const raw of names) {
+            const q = raw.trim().toLowerCase();
+            const exact = everyone.filter((c) => c.name.toLowerCase() === q);
+            const matches = exact.length ? exact : everyone.filter((c) => c.name.toLowerCase().includes(q));
+            if (matches.length === 0) notes.push(`No candidate named "${clean(raw, 60)}" in ${code}.`);
+            else if (matches.length > 1) {
+              return `Several candidates in ${code} match "${clean(raw, 60)}": ${matches.slice(0, MAX_MATCHES).map((m) => clean(m.name, 60)).join('; ')}. Ask the recruiter which one (full name).`;
+            } else picked.push(matches[0]!);
+          }
+        } else if (top) {
+          // "Accept the top 5": the best-ranked people who CAN make this move.
+          picked = everyone.filter((c) => c.score !== null && checkMove(c.status as CandidateStatus, to, c.name).allowed).slice(0, top);
+          if (picked.length < top) notes.push(`Only ${picked.length} scored candidate(s) in ${code} can be moved to ${STATUS_LABELS[to]} now.`);
+        } else {
+          return 'Ask the recruiter which candidates: names, or for example "the top 5".';
+        }
+        if (picked.length === 0) return notes.join(' ') || `Nobody in ${code} can be moved to ${STATUS_LABELS[to]}.`;
+        const candidates = picked.map((c) => {
+          const check = checkMove(c.status as CandidateStatus, to, c.name);
+          return { id: c.id, name: c.name, from: c.status, fromLabel: STATUS_LABELS[c.status as CandidateStatus], score: c.score ?? null, rank: ranks.get(c.id) ?? null, allowed: check.allowed, reason: check.allowed ? null : check.reason };
+        });
+        const action = await proposeAction(userId, 'change_status', { jobId: String(found._id), jobCode: code, title: found.title, to, toLabel: STATUS_LABELS[to], candidates }, notes);
+        actionIds.push(String(action._id));
+        const ok = candidates.filter((c) => c.allowed).length;
+        cardIntros.push(
+          `Here's a card to move ${ok} candidate${ok === 1 ? '' : 's'} in ${code} to **${STATUS_LABELS[to]}**${ok ? `: ${candidates.filter((c) => c.allowed).map((c) => c.name).join(', ')}` : ''}.${candidates.length > ok ? ` ${candidates.length - ok} can't move yet (the reason is on the card).` : ''}`,
+        );
+        return `A status card (${ok} to ${STATUS_LABELS[to]}) is now shown with Confirm/Cancel. Nothing changes until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_status_change',
+        description:
+          'Propose moving candidates of a job to a new pipeline status: Review (accepted / rejected) and later steps (contacted, replied, interested, not_interested, meeting_booked, interviewed, shortlisted, hired, unsubscribed). Pick them by names, or the top N by score ("accept the top 5"). Shows a card to confirm; the pipeline rules say who can move.',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          to: z.enum(CANDIDATE_STATUSES).describe('The new status'),
+          names: z.array(z.string()).optional().describe('Candidate names as the recruiter said them'),
+          top: z.number().int().min(1).max(100).optional().describe('Or: the best N by score, e.g. 5 for "the top 5"'),
         }),
       },
     ),

@@ -113,3 +113,33 @@ export async function undoStatusChange({
 
   return { candidate, activity };
 }
+
+/**
+ * Moves several candidates of ONE job to a new status (e.g. "accept these 5"). Shared by
+ * the Accept / Reject / Move buttons on the job page and the AI's confirmed status card.
+ * Each person goes through changeCandidateStatus (same rules, one activity line each);
+ * anyone the rules don't allow is skipped with the reason, instead of failing them all.
+ */
+export async function changeStatuses(
+  jobId: Types.ObjectId,
+  candidateIds: string[],
+  to: CandidateStatus,
+  { actor, userId }: { actor: Actor; userId: string },
+) {
+  const changed: { id: string; name: string; activityId: string }[] = [];
+  const skipped: { id: string; name: string; reason: string }[] = [];
+  for (const id of [...new Set(candidateIds)]) {
+    const candidate = Types.ObjectId.isValid(id) ? await CandidateModel.findOne({ _id: id, jobId }, { name: 1 }).lean() : null;
+    if (!candidate) {
+      skipped.push({ id, name: 'Unknown', reason: 'not a candidate of this job' });
+      continue;
+    }
+    try {
+      const { activity } = await changeCandidateStatus({ candidateId: id, to, actor, userId });
+      changed.push({ id, name: candidate.name, activityId: String(activity._id) });
+    } catch (err) {
+      skipped.push({ id, name: candidate.name, reason: err instanceof Error ? err.message : 'not allowed' });
+    }
+  }
+  return { to, changed, skipped };
+}

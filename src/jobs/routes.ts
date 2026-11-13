@@ -14,7 +14,12 @@
 import { Router } from 'express';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { updateCandidateContact } from '../candidates/updateCandidate.js';
-import { asyncHandler } from '../errors.js';
+import { changeStatuses, undoStatusChange } from '../candidates/statusChange.js';
+import { CANDIDATE_STATUSES } from '../pipeline/status.js';
+import { ActivityModel } from '../models/activity.js';
+import { Types } from 'mongoose';
+import { z } from 'zod';
+import { AppError, asyncHandler } from '../errors.js';
 import {
   createJob,
   createJobInput,
@@ -24,9 +29,15 @@ import {
   listCandidates,
   listJobs,
   overview,
+  resolveJob,
   updateJob,
   updateJobInput,
 } from './service.js';
+
+const statusBody = z.object({
+  candidateIds: z.array(z.string()).min(1, 'choose at least one candidate').max(500),
+  to: z.enum(CANDIDATE_STATUSES),
+});
 
 export function jobsRouter(): Router {
   const router = Router();
@@ -80,6 +91,30 @@ export function jobsRouter(): Router {
       const result = await deleteAllCandidates(req.params.id as string, { userId: req.user!.id });
       req.log.info(result, 'All candidates removed');
       res.json(result);
+    }),
+  );
+
+  // Status changes (Review: Accept / Reject, and every later step: Contacted ... Hired).
+  // One body for one or many: { candidateIds: [...], to: "accepted" }. The pipeline rules
+  // decide what's allowed; people who can't move are skipped with the reason.
+  router.post(
+    '/:id/candidates/status',
+    asyncHandler(async (req, res) => {
+      const job = await resolveJob(req.params.id as string);
+      const body = statusBody.parse(req.body);
+      res.json(await changeStatuses(job._id, body.candidateIds, body.to, { actor: 'recruiter', userId: req.user!.id }));
+    }),
+  );
+
+  // Undo a status change (puts the candidate back; only if nothing changed since).
+  router.post(
+    '/:id/activity/:activityId/undo',
+    asyncHandler(async (req, res) => {
+      const job = await resolveJob(req.params.id as string);
+      const activity = Types.ObjectId.isValid(req.params.activityId as string) ? await ActivityModel.findOne({ _id: req.params.activityId, jobId: job._id }).lean() : null;
+      if (!activity) throw AppError.notFound('Status change not found');
+      const { candidate } = await undoStatusChange({ activityId: activity._id, actor: 'recruiter', userId: req.user!.id });
+      res.json({ candidateId: String(candidate._id), status: candidate.status });
     }),
   );
 

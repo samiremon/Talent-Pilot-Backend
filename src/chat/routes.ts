@@ -17,6 +17,7 @@ import type { SourcingDeps } from '../sourcing/service.js';
 import { cancelAction, confirmAction } from './actions.js';
 import { attachCsv } from './attachments.js';
 import { postScoringFollowUp } from './followUp.js';
+import { STATUS_LABELS } from '../pipeline/status.js';
 import { addSystemNote, listMessages, sendMessage } from './service.js';
 
 // 12,000 characters ≈ 3,000 tokens: plenty for a long job description (usually 2,000-5,000),
@@ -84,6 +85,16 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'change_status'
+              ? (() => {
+                  const r = card.result as { to?: string; changed?: { name: string }[]; skipped?: { name: string; reason: string }[] } | null;
+                  const label = STATUS_LABELS[(r?.to ?? 'sourced') as keyof typeof STATUS_LABELS] ?? r?.to;
+                  const moved = r?.changed?.length
+                    ? `Done: moved ${r.changed.length} candidate${r.changed.length === 1 ? '' : 's'} to ${label}: ${r.changed.map((c) => c.name).join(', ')}.`
+                    : `Nobody was moved to ${label}.`;
+                  const skipped = r?.skipped?.length ? ` Skipped: ${r.skipped.map((c) => `${c.name} (${c.reason})`).join('; ')}.` : '';
+                  return moved + skipped;
+                })()
             : card.type === 'update_candidate'
               ? (() => {
                   const r = card.result as { name?: string; changed?: string[] } | null;

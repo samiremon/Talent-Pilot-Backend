@@ -450,6 +450,50 @@ describe('editing a candidate\'s email and profile link', () => {
   });
 });
 
+describe('review and status changes', () => {
+  async function setupJob() {
+    const { app } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    const [a, b, c] = await CandidateModel.insertMany([
+      { jobId: job.id, source: 'csv', name: 'Ana', email: 'ana@example.com', score: 90 },
+      { jobId: job.id, source: 'csv', name: 'Ben', email: 'ben@example.com', score: 80 },
+      { jobId: job.id, source: 'csv', name: 'Cal', email: 'cal@example.com', score: 70 },
+    ]);
+    return { agent, job, a: a!, b: b!, c: c! };
+  }
+
+  it('accepts several at once, skips moves the rules forbid, and can undo', async () => {
+    const { agent, job, a, b } = await setupJob();
+    const res = await agent.post(`/jobs/${job.id}/candidates/status`).send({ candidateIds: [String(a._id), String(b._id)], to: 'accepted' }).expect(200);
+    expect(res.body.changed.map((x: { name: string }) => x.name)).toEqual(['Ana', 'Ben']);
+    expect((await CandidateModel.findById(a._id).lean())?.status).toBe('accepted');
+
+    // Hired straight from Accepted isn't allowed: skipped with the reason.
+    const hire = await agent.post(`/jobs/${job.id}/candidates/status`).send({ candidateIds: [String(a._id)], to: 'hired' }).expect(200);
+    expect(hire.body.changed).toEqual([]);
+    expect(hire.body.skipped[0].reason).toMatch(/Ana/);
+
+    // Undo Ben's acceptance.
+    const undo = await agent.post(`/jobs/${job.id}/activity/${res.body.changed[1].activityId}/undo`).send({}).expect(200);
+    expect(undo.body.status).toBe('sourced');
+    const activity = JSON.stringify((await agent.get(`/jobs/${job.id}/activity`).expect(200)).body);
+    expect(activity).toMatch(/Ana: Sourced → Accepted/);
+    expect(activity).toMatch(/Ben: undo, back to Sourced/);
+  });
+
+  it('works from the AI card, with the people the recruiter left ticked', async () => {
+    const { agent, job, a, b, c } = await setupJob();
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { proposeAction } = await import('../src/chat/actions.js');
+    const people = [a, b, c].map((x) => ({ id: String(x._id), name: x.name, allowed: true }));
+    const card = await proposeAction(String(user!._id), 'change_status', { jobId: job.id, jobCode: job.jobCode, to: 'accepted', candidates: people });
+    const res = await agent.post(`/chat/actions/${card._id}/confirm`).send({ fields: { candidateIds: [String(a._id), String(c._id)] } }).expect(200);
+    expect(res.body.message.text).toBe('Done: moved 2 candidates to Accepted: Ana, Cal.');
+    expect((await CandidateModel.findById(b._id).lean())?.status).toBe('sourced'); // unticked: untouched
+  });
+});
+
 describe('removing a candidate', () => {
   const PERSON = { name: 'Delete Me', email: 'delete.me@example.com', profileText: 'React and TypeScript, 3 years.' };
 

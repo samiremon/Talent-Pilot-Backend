@@ -15,6 +15,8 @@ import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from 
 import { addManualCandidate } from '../sourcing/manual.js';
 import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandidate.js';
 import { updateCandidateContact } from '../candidates/updateCandidate.js';
+import { changeStatuses } from '../candidates/statusChange.js';
+import type { CandidateStatus } from '../pipeline/status.js';
 import { SOURCE_LABELS, type SearchSource } from '../sourcing/search.js';
 import { startSourcing } from '../sourcing/webSourcing.js';
 import { startScoring, type SourcingDeps } from '../sourcing/service.js';
@@ -138,6 +140,15 @@ export async function confirmAction(
         // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
         const payload = action.payload as { jobId: string; candidateId: string };
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
+        break;
+      }
+      case 'change_status': {
+        // payload = { jobId, to, candidates: [{ id, name, allowed, ... }] }. The recruiter may
+        // have unticked some people on the card: edits.candidateIds is who's left.
+        const payload = action.payload as { jobId: string; to: CandidateStatus; candidates: { id: string; allowed: boolean }[] };
+        const ids = (edits?.candidateIds as string[] | undefined) ?? payload.candidates.filter((c) => c.allowed).map((c) => c.id);
+        const moved = await changeStatuses(new Types.ObjectId(payload.jobId), ids, payload.to, { actor: 'ai', userId });
+        result = { jobId: payload.jobId, to: payload.to, changed: moved.changed, skipped: moved.skipped };
         break;
       }
       case 'update_candidate': {

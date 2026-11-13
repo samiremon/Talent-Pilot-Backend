@@ -142,5 +142,14 @@ describe('chat agent: AI calls per message', () => {
     expect(result.reply).toMatch(/^Here's a card to update Rafi Karim's email in JOB-0001\. Note: the email domain looks like a typo of gmail\.com/);
     expect((await CandidateModel.findOne({ name: 'Rafi Karim' }).lean())?.email).toBe('rafi@example.com'); // unchanged until Confirm
   });
+
+  it('"accept the top 2": picks the best-ranked who can move, in one call', async () => {
+    const { job, userId } = await setup(); // Sara Ahmed 90, Sara Khan 70, Rafi Karim 50
+    const { ai, seen } = scriptedAi([call('propose_status_change', { to: 'accepted', top: 2 })]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'accept the top 2' });
+    expect(seen).toHaveLength(1);
+    expect(result.reply).toMatch(/^Here's a card to move 2 candidates in JOB-0001 to \*\*Accepted\*\*: Sara Ahmed, Sara Khan\./);
+    expect(await CandidateModel.countDocuments({ jobId: job._id, status: 'accepted' })).toBe(0); // nothing until Confirm
+  });
 });
 
