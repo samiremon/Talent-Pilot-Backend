@@ -20,6 +20,7 @@ import { ChatGroq } from '@langchain/groq';
 import type { z } from 'zod';
 import { AppError } from '../errors.js';
 import type { AiRole } from '../models/aiUsage.js';
+import { rateLimitFetch } from './rateLimits.js';
 import { recordUsage, type UsageTarget } from './usage.js';
 
 export interface AiSettings {
@@ -56,6 +57,9 @@ export interface Ai {
   structured<T>(request: StructuredRequest<T>): Promise<{ data: T; usage: TokenUsage }>;
   /** The LangChain chat model for a role (null in mock mode). The chat agent uses this. */
   chatModel(role: AiRole): ChatGroq | null;
+  /** "Check now" on the token dashboard: one tiny (1-token) call per model to refresh the
+   *  rate-limit numbers. Costs 1 request per model. Does nothing in mock mode. */
+  checkLimits(): Promise<void>;
 }
 
 /** Roughly how many tokens a text is (≈4 characters per token). Only used in mock mode. */
@@ -92,6 +96,8 @@ export function createAi(settings: AiSettings): Ai {
         // On "too many requests" (free tier) or a network blip, wait and retry up to 4 times,
         // waiting longer each time, before giving up.
         maxRetries: 4,
+        // Passes requests through unchanged, but notes Groq's rate-limit headers (see rateLimits.ts).
+        fetch: rateLimitFetch(),
       });
       clients.set(role, client);
     }
@@ -131,5 +137,17 @@ export function createAi(settings: AiSettings): Ai {
     return { data, usage };
   }
 
-  return { mode, models: settings.models, structured, chatModel };
+  async function checkLimits() {
+    if (!settings.apiKey) return;
+    const tracked = rateLimitFetch();
+    for (const modelName of new Set(Object.values(settings.models))) {
+      await tracked('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+      }).catch(() => undefined); // a failing model shouldn't stop the others
+    }
+  }
+
+  return { mode, models: settings.models, structured, chatModel, checkLimits };
 }

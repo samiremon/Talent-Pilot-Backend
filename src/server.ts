@@ -45,6 +45,7 @@ async function start(): Promise<void> {
 
   const app = createApp({
     ai,
+    aiLimits: config.aiLimits,
     corsOrigins: config.corsOrigins,
     logger,
     trustProxy: config.trustProxy,

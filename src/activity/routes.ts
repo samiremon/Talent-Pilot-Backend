@@ -4,11 +4,14 @@
  *   GET /activity?before=&limit=                  tab 1: everything that happened, with names
  *   GET /activity/token-usage?before=&limit=      tab 2: every AI call with who/task/tokens
  *   GET /activity/token-dashboard?days=7          tab 3: tokens per recruiter, all-time + last N days
+ *   GET /activity/ai-limits                       tab 3: how much of the Groq limits / budgets is left
+ *   POST /activity/ai-limits/check                tab 3: "Check now" (1 tiny request per model)
  */
 import { Router } from 'express';
 import { z } from 'zod';
+import type { Ai } from '../ai/client.js';
 import { asyncHandler } from '../errors.js';
-import { activityPage, tokenDashboard, tokenUsagePage } from './service.js';
+import { activityPage, aiLimits, tokenDashboard, tokenUsagePage, type LimitSettings } from './service.js';
 
 const pageQuery = z.object({
   before: z.coerce.date().optional(),
@@ -19,7 +22,7 @@ const dashboardQuery = z.object({
   days: z.coerce.number().int().min(1, 'must be at least 1').max(365, 'can be at most 365').default(7),
 });
 
-export function activityRouter(): Router {
+export function activityRouter(ai: Ai, limits: LimitSettings = {}): Router {
   const router = Router();
 
   router.get(
@@ -43,6 +46,21 @@ export function activityRouter(): Router {
     asyncHandler(async (req, res) => {
       const { days } = dashboardQuery.parse(req.query);
       res.json(await tokenDashboard(days));
+    }),
+  );
+
+  router.get(
+    '/ai-limits',
+    asyncHandler(async (_req, res) => {
+      res.json(await aiLimits(ai, limits));
+    }),
+  );
+
+  router.post(
+    '/ai-limits/check',
+    asyncHandler(async (_req, res) => {
+      await ai.checkLimits();
+      res.json(await aiLimits(ai, limits));
     }),
   );
 

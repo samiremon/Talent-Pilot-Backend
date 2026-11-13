@@ -63,6 +63,9 @@ services:
       AI_MODEL_AGENT: ${AI_MODEL_AGENT:-openai/gpt-oss-120b}
       AI_MODEL_BULK: ${AI_MODEL_BULK:-openai/gpt-oss-20b}
       AI_MODEL_SAFETY: ${AI_MODEL_SAFETY:-openai/gpt-oss-safeguard-20b}
+      AI_DAILY_TOKEN_LIMIT: ${AI_DAILY_TOKEN_LIMIT:-}
+      AI_TOKEN_BUDGET_WEEK: ${AI_TOKEN_BUDGET_WEEK:-}
+      AI_TOKEN_BUDGET_MONTH: ${AI_TOKEN_BUDGET_MONTH:-}
       # nginx (the web container) sits in front of the API: trust its forwarded IP.
       TRUST_PROXY: 1
     ports:

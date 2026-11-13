@@ -10,6 +10,8 @@
  */
 import { Types } from 'mongoose';
 import { listActivity, userNames } from '../jobs/service.js';
+import type { Ai } from '../ai/client.js';
+import { RateLimitSnapshotModel } from '../ai/rateLimits.js';
 import { AiUsageModel } from '../models/aiUsage.js';
 import { JobModel } from '../models/job.js';
 import { UserModel } from '../models/user.js';
@@ -120,4 +122,95 @@ export async function tokenDashboard(days: number) {
 
   rows.sort((a, b) => total(b.lastDays) - total(a.lastDays) || total(b.allTime) - total(a.allTime) || a.name.localeCompare(b.name));
   return { days, since, totals: { allTime: sum((r) => r.allTime), lastDays: sum((r) => r.lastDays) }, users: rows };
+}
+
+// ---------- AI limits ("how much is left") ----------
+
+export interface LimitSettings {
+  /** Groq's daily token limit per model (TPD), from .env; Groq doesn't report it live. */
+  dailyTokens?: number;
+  /** Your own team budgets: Groq's free tier has no weekly/monthly limit. */
+  weekBudget?: number;
+  monthBudget?: number;
+}
+
+/** A "used / limit / left / % left" box. limit undefined = no limit known or set. */
+function meter(used: number, limit?: number, extra: Record<string, unknown> = {}) {
+  if (!limit) return { used, limit: null, remaining: null, percentLeft: null, ...extra };
+  const remaining = Math.max(0, limit - used);
+  return { used, limit, remaining, percentLeft: Math.round((remaining / limit) * 100), ...extra };
+}
+
+async function tokensSince(since: Date, modelName?: string): Promise<number> {
+  const [row] = await AiUsageModel.aggregate<{ total: number }>([
+    { $match: { createdAt: { $gte: since }, ...(modelName ? { model: modelName } : {}) } },
+    { $group: { _id: null, total: { $sum: { $add: ['$inputTokens', '$outputTokens'] } } } },
+  ]);
+  return row?.total ?? 0;
+}
+
+/**
+ * For each Groq model: requests left today and tokens left this minute (live from Groq's
+ * last answer), and tokens left today (our own count vs the daily limit from .env).
+ * Plus week/month budgets across all models.
+ */
+export async function aiLimits(ai: Pick<Ai, 'mode' | 'models'>, settings: LimitSettings, now = new Date()) {
+  const day = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const week = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const month = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  // One entry per distinct model, listing which roles use it.
+  const roles = new Map<string, string[]>();
+  for (const [role, modelName] of Object.entries(ai.models)) roles.set(modelName, [...(roles.get(modelName) ?? []), role]);
+
+  const snapshots = new Map(
+    (await RateLimitSnapshotModel.find({ _id: { $in: [...roles.keys()] } }).lean()).map((s) => [String(s._id), s]),
+  );
+
+  const models = await Promise.all(
+    [...roles.entries()].map(async ([modelName, usedBy]) => {
+      const snap = snapshots.get(modelName);
+      // If the reset time has passed since Groq last told us, the window has refilled.
+      const requestsLeft =
+        snap?.limitRequests == null
+          ? null
+          : snap.resetRequestsAt && snap.resetRequestsAt <= now
+            ? snap.limitRequests
+            : (snap.remainingRequests ?? null);
+      const tokensLeft =
+        snap?.limitTokens == null
+          ? null
+          : snap.resetTokensAt && snap.resetTokensAt <= now
+            ? snap.limitTokens
+            : (snap.remainingTokens ?? null);
+      const pct = (left: number | null, limit: number | null | undefined) =>
+        left === null || !limit ? null : Math.round((left / limit) * 100);
+
+      return {
+        model: modelName,
+        usedBy,
+        updatedAt: snap?.updatedAt ?? null,
+        requestsToday: {
+          limit: snap?.limitRequests ?? null,
+          remaining: requestsLeft,
+          percentLeft: pct(requestsLeft, snap?.limitRequests),
+          resetsAt: snap?.resetRequestsAt ?? null,
+        },
+        tokensPerMinute: {
+          limit: snap?.limitTokens ?? null,
+          remaining: tokensLeft,
+          percentLeft: pct(tokensLeft, snap?.limitTokens),
+          resetsAt: snap?.resetTokensAt ?? null,
+        },
+        tokensToday: meter(await tokensSince(day, modelName), settings.dailyTokens),
+      };
+    }),
+  );
+
+  return {
+    mode: ai.mode,
+    models,
+    week: meter(await tokensSince(week), settings.weekBudget),
+    month: meter(await tokensSince(month), settings.monthBudget),
+  };
 }

@@ -33,6 +33,8 @@ export interface AppOptions {
   trustProxy?: number;
   /** The AI client. Defaults to mock mode (no key), which is what tests use. */
   ai?: Ai;
+  /** Optional token limits/budgets for the token dashboard (see config.ts). */
+  aiLimits?: { dailyTokens?: number; weekBudget?: number; monthBudget?: number };
 }
 
 const MOCK_AI_MODELS = { agent: 'mock', bulk: 'mock', safety: 'mock' };
@@ -47,6 +49,7 @@ export function createApp({
   auth = { cookieSecure: false, sessionTtlHours: 12 },
   trustProxy = 0,
   ai = createAi({ models: MOCK_AI_MODELS }),
+  aiLimits = {},
 }: AppOptions): Express {
   const app = express();
 
@@ -110,7 +113,7 @@ export function createApp({
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
   app.use('/chat', requireAuth, chatRouter(ai));
-  app.use('/activity', requireAuth, activityRouter());
+  app.use('/activity', requireAuth, activityRouter(ai, aiLimits));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.
   app.use(notFoundHandler);

@@ -84,6 +84,13 @@ const envSchema = z.object({
   AI_MODEL_AGENT: z.string().trim().min(1).default('openai/gpt-oss-120b'), // chat, reading JDs, writing emails
   AI_MODEL_BULK: z.string().trim().min(1).default('openai/gpt-oss-20b'), // scoring many candidates, sorting replies
   AI_MODEL_SAFETY: z.string().trim().min(1).default('openai/gpt-oss-safeguard-20b'), // spotting prompt-injection tricks
+  // --- Token dashboard limits (all optional) ---
+  // Groq's daily TOKEN limit per model isn't sent in its replies; copy it from
+  // https://console.groq.com/settings/limits ("TPD") to see "tokens left today".
+  AI_DAILY_TOKEN_LIMIT: optional(z.coerce.number().int().positive()),
+  // Groq has no weekly/monthly limit; set your own team budgets to see "% left".
+  AI_TOKEN_BUDGET_WEEK: optional(z.coerce.number().int().positive()),
+  AI_TOKEN_BUDGET_MONTH: optional(z.coerce.number().int().positive()),
   // DEMO ONLY: lets the login page show a "Use demo account" button that fills in the
   // recruiter email and password above. Anyone who can open the site can then log in,
   // so keep this off for anything real.
@@ -111,6 +118,8 @@ export type Config = {
   smtp: { host: string; port: number; secure: boolean; user?: string; pass?: string; from: string };
   /** AI settings. `apiKey` undefined = mock mode. */
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
+  /** Optional limits shown on the token dashboard. */
+  aiLimits: { dailyTokens?: number; weekBudget?: number; monthBudget?: number };
 };
 
 /**
@@ -167,6 +176,7 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
       pass: e.SMTP_PASS,
       from: e.EMAIL_FROM,
     },
+    aiLimits: { dailyTokens: e.AI_DAILY_TOKEN_LIMIT, weekBudget: e.AI_TOKEN_BUDGET_WEEK, monthBudget: e.AI_TOKEN_BUDGET_MONTH },
     ai: {
       apiKey: e.GROQ_API_KEY,
       models: { agent: e.AI_MODEL_AGENT, bulk: e.AI_MODEL_BULK, safety: e.AI_MODEL_SAFETY },
