@@ -4,6 +4,7 @@ import { createApp } from './app.js';
 import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
+import { createMailer } from './email/mailer.js';
 import { createLogger } from './logger.js';
 
 let config: Config;
@@ -43,6 +44,10 @@ async function start(): Promise<void> {
     logger,
     trustProxy: config.trustProxy,
     auth: {
+      appUrl: config.appUrl,
+      allowSignup: config.allowSignup,
+      google: config.google,
+      mailer: createMailer(config.smtp),
       cookieSecure: config.cookieSecure,
       sessionTtlHours: config.sessionTtlHours,
       // Only hand out the demo account when DEMO_LOGIN_ENABLED=true.

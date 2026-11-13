@@ -32,11 +32,23 @@ export async function findUserBySessionToken(token: string): Promise<PublicUser 
   const session = await SessionModel.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } }).lean();
   if (!session) return null;
 
-  const user = await UserModel.findById(session.userId).lean();
+  // +passwordHash only to tell the browser whether the account HAS a password (never the hash).
+  const user = await UserModel.findById(session.userId).select('+passwordHash').lean();
   return user ? toPublicUser(user) : null;
 }
 
 /** Logout: delete the session so the token stops working right away. */
 export async function deleteSession(token: string): Promise<void> {
   await SessionModel.deleteOne({ tokenHash: hashToken(token) });
+}
+
+/**
+ * Logs a user out everywhere, e.g. after a password change or reset, so a stolen
+ * session can't keep working. `keepToken` = the current browser stays logged in.
+ */
+export async function deleteUserSessions(userId: Types.ObjectId | string, keepToken?: string): Promise<void> {
+  await SessionModel.deleteMany({
+    userId,
+    ...(keepToken ? { tokenHash: { $ne: hashToken(keepToken) } } : {}),
+  });
 }

@@ -13,6 +13,10 @@ const SECRET_PATHS = [
   '*.token',
   'apiKey',
   '*.apiKey',
+  'pass',
+  '*.pass',
+  'clientSecret',
+  '*.clientSecret',
   'email',
   '*.email',
 ];

@@ -55,6 +55,26 @@ const envSchema = z.object({
   SEED_RECRUITER_PASSWORD: optional(z.string().min(8, 'must be at least 8 characters')),
   SEED_RECRUITER_NAME: z.string().trim().min(1).default('Recruiter'),
 
+  // --- Accounts ---
+  // Where people open the app (used in emailed links and for the Google redirect).
+  // `npm run dev` = http://localhost:5173, Docker = http://localhost:8080.
+  APP_URL: z.url({ protocol: /^https?$/ }).default('http://localhost:5173'),
+  // Let new people create accounts with the Sign up page.
+  ALLOW_SIGNUP: booleanText.default(true),
+  // "Continue with Google" (optional, both or neither). See README for the 2-minute setup.
+  GOOGLE_CLIENT_ID: optional(z.string().trim().min(10)),
+  GOOGLE_CLIENT_SECRET: optional(z.string().trim().min(10)),
+
+  // --- Email ---
+  // Default = Mailpit, the fake inbox in Docker (read mail at http://localhost:8025).
+  // Put a real provider's SMTP details here to send real emails.
+  SMTP_HOST: z.string().trim().min(1).default('localhost'),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1025),
+  SMTP_SECURE: booleanText.default(false),
+  SMTP_USER: optional(z.string()),
+  SMTP_PASS: optional(z.string()),
+  EMAIL_FROM: z.string().trim().min(3).default('TalentPilot <no-reply@talentpilot.local>'),
+
   // --- AI ---
   // Groq API key (free at https://console.groq.com/keys). Empty = "mock mode":
   // the app still works end to end with built-in sample answers, no key needed.
@@ -83,6 +103,11 @@ export type Config = {
   seedRecruiter?: { email: string; password: string; name: string };
   /** Show the "Use demo account" button (only possible when seedRecruiter is set). */
   demoLoginEnabled: boolean;
+  appUrl: string;
+  allowSignup: boolean;
+  /** "Continue with Google"; undefined = turned off. */
+  google?: { clientId: string; clientSecret: string; appUrl: string };
+  smtp: { host: string; port: number; secure: boolean; user?: string; pass?: string; from: string };
   /** AI settings. `apiKey` undefined = mock mode. */
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
 };
@@ -100,6 +125,13 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     throw new Error(`Invalid settings, the server cannot start:\n${problems}`);
   }
   const e = result.data;
+
+  if (Boolean(e.GOOGLE_CLIENT_ID) !== Boolean(e.GOOGLE_CLIENT_SECRET)) {
+    throw new Error(
+      'Invalid settings, the server cannot start:\n' +
+        '  - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET: set both or neither',
+    );
+  }
 
   // Setting only one of the two seed values is almost certainly a mistake: say so.
   if (Boolean(e.SEED_RECRUITER_EMAIL) !== Boolean(e.SEED_RECRUITER_PASSWORD)) {
@@ -120,6 +152,20 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     trustProxy: e.TRUST_PROXY,
     // The button needs credentials to fill in, so it's off when no seed account is set.
     demoLoginEnabled: (e.DEMO_LOGIN_ENABLED ?? false) && Boolean(e.SEED_RECRUITER_EMAIL && e.SEED_RECRUITER_PASSWORD),
+    appUrl: e.APP_URL.replace(/\/$/, ''),
+    allowSignup: e.ALLOW_SIGNUP,
+    google:
+      e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET
+        ? { clientId: e.GOOGLE_CLIENT_ID, clientSecret: e.GOOGLE_CLIENT_SECRET, appUrl: e.APP_URL.replace(/\/$/, '') }
+        : undefined,
+    smtp: {
+      host: e.SMTP_HOST,
+      port: e.SMTP_PORT,
+      secure: e.SMTP_SECURE,
+      user: e.SMTP_USER,
+      pass: e.SMTP_PASS,
+      from: e.EMAIL_FROM,
+    },
     ai: {
       apiKey: e.GROQ_API_KEY,
       models: { agent: e.AI_MODEL_AGENT, bulk: e.AI_MODEL_BULK, safety: e.AI_MODEL_SAFETY },

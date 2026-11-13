@@ -37,8 +37,17 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       MONGODB_URI: mongodb://${MONGO_USER:-talentpilot}:${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}@mongo:27017/talentpilot?authSource=admin
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
-      SMTP_HOST: mailpit
-      SMTP_PORT: 1025
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      EMAIL_FROM: ${EMAIL_FROM:-TalentPilot <no-reply@talentpilot.local>}
+      # Where people open the app: used in emailed links and the Google redirect.
+      APP_URL: ${DOCKER_APP_URL:-http://localhost:8080}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # Login. The recruiter account is created on first start.
       SEED_RECRUITER_EMAIL: ${SEED_RECRUITER_EMAIL:?Set SEED_RECRUITER_EMAIL in .env}
       SEED_RECRUITER_PASSWORD: ${SEED_RECRUITER_PASSWORD:?Set SEED_RECRUITER_PASSWORD in .env}
@@ -117,6 +126,8 @@ services:
     restart: unless-stopped
     ports:
       - "${MAILPIT_UI_PORT:-8025}:8025"
+      # SMTP on this machine only, so `npm run dev` can send mail into Mailpit too.
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
       interval: 10s

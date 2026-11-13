@@ -16,6 +16,10 @@ describe('parseConfig', () => {
       trustProxy: 0,
       seedRecruiter: undefined,
       demoLoginEnabled: false,
+      appUrl: 'http://localhost:5173',
+      allowSignup: true,
+      google: undefined,
+      smtp: { host: 'localhost', port: 1025, secure: false, user: undefined, pass: undefined, from: 'TalentPilot <no-reply@talentpilot.local>' },
       // No key = mock mode; default models per role.
       ai: {
         apiKey: undefined,
@@ -78,6 +82,15 @@ describe('parseConfig', () => {
     expect(parseConfig({ MONGODB_URI, GROQ_API_KEY: 'gsk_test123' }).ai.apiKey).toBe('gsk_test123');
     expect(parseConfig({ MONGODB_URI, GROQ_API_KEY: '' }).ai.apiKey).toBeUndefined();
     expect(() => parseConfig({ MONGODB_URI, GROQ_API_KEY: 'sk-openai' })).toThrow(/GROQ_API_KEY/);
+  });
+
+  it('turns Google on only when both id and secret are set', () => {
+    expect(parseConfig({ MONGODB_URI, GOOGLE_CLIENT_ID: 'id-1234567890', GOOGLE_CLIENT_SECRET: 'secret-123456' }).google).toEqual({
+      clientId: 'id-1234567890',
+      clientSecret: 'secret-123456',
+      appUrl: 'http://localhost:5173',
+    });
+    expect(() => parseConfig({ MONGODB_URI, GOOGLE_CLIENT_ID: 'id-1234567890' })).toThrow(/set both or neither/);
   });
 
   it('rejects a short recruiter password', () => {
