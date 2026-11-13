@@ -68,8 +68,9 @@ const envSchema = z.object({
   // --- Email ---
   // Default = Mailpit, the fake inbox in Docker (read mail at http://localhost:8025).
   // Put a real provider's SMTP details here to send real emails.
-  SMTP_HOST: z.string().trim().min(1).default('localhost'),
-  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1025),
+  // Left empty in .env = Mailpit (localhost:1025 for npm run dev; Docker uses its mailpit container).
+  SMTP_HOST: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().min(1).default('localhost')),
+  SMTP_PORT: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).max(65535).default(1025)),
   SMTP_SECURE: booleanText.default(false),
   SMTP_USER: optional(z.string()),
   SMTP_PASS: optional(z.string()),
