@@ -56,12 +56,15 @@ export function chatRouter(ai: Ai): Router {
     asyncHandler(async (req, res) => {
       const { fields } = confirmBody.parse(req.body ?? {});
       const card = await confirmAction(req.params.id as string, req.user!.id, fields);
-      const result = card.result as { jobId?: string; title?: string } | null;
-      const note = await addSystemNote(
-        req.user!.id,
-        result?.title ? `Done: the job "${result.title}" was created.` : 'Done.',
-        result?.jobId,
-      );
+      const result = card.result as { jobId?: string; title?: string; jobCode?: string; deletedCandidates?: number } | null;
+      const name = result?.title ? `"${result.title}"${result.jobCode ? ` (${result.jobCode})` : ''}` : 'the job';
+      const text =
+        card.type === 'create_job'
+          ? `Done: the job ${name} was created.`
+          : card.type === 'update_job'
+            ? `Done: the job ${name} was updated.`
+            : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
+      const note = await addSystemNote(req.user!.id, text, card.type === 'delete_job' ? null : result?.jobId);
       res.json({ card, message: note });
     }),
   );

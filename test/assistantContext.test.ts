@@ -58,7 +58,7 @@ describe('assistant context', () => {
     // Omar is the one chatting: his actions are "(you)", Rina's are "(teammate)".
     const text = await buildAssistantContext({ jobId: job.id, currentUserId: String(omar._id) });
 
-    expect(text).toContain(`"Senior React Developer" (id ${job.id}, active): 2 candidates: 2 Sourced | must-have: React ← open on screen`);
+    expect(text).toContain('- JOB-0001 "Senior React Developer" (active): 2 candidates: 2 Sourced | must-have: React ← open on screen');
     // Oldest first, each with the person's name.
     const lines = text.split('\n').filter((l) => l.startsWith('- 20'));
     expect(lines[0]).toMatch(/Rina \(teammate\) · Job created: Senior React Developer$/);

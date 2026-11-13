@@ -23,7 +23,8 @@ import type { Ai, TokenUsage } from '../ai/client.js';
 import { extractJob } from '../ai/extractJob.js';
 import { recordUsage } from '../ai/usage.js';
 import { buildAssistantContext, clean } from '../assistant/context.js';
-import { listCandidates } from '../jobs/service.js';
+import { getJob, listCandidates, resolveJob, updateJobInput } from '../jobs/service.js';
+import { REMOTE_POLICIES } from '../models/job.js';
 import { proposeAction } from './actions.js';
 
 const SYSTEM_PROMPT = `You are TalentPilot, an AI recruiting co-worker inside a recruiting app shared by a hiring team. You help the person chatting with you run hiring: job description -> job -> candidates -> outreach -> replies -> meetings -> hire.
@@ -33,7 +34,9 @@ How you work:
 - You can NOT change anything yourself. Tools that "create" or "change" things only PROPOSE: the app shows the recruiter a card with Confirm/Cancel. Never say something was created/sent/changed unless the conversation shows the recruiter confirmed it.
 - When the recruiter pastes a job description (or asks to create a job from one), call propose_job_from_description. Then briefly say what you found (e.g. the title and anything important that was missing). Do NOT write instructions about checking the card or pressing Confirm: the app adds that sentence itself.
 - Never invent facts about jobs or candidates. Use the workspace data below and your tools. If you don't know, say so.
-- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) answer questions about the recruiter's jobs and candidates using the workspace data and your tools.
+- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) edit a job (propose_job_edit) or delete a job (propose_job_delete), each shown as a card to confirm, (3) answer questions about the recruiter's jobs and candidates using the workspace data and your tools.
+- Jobs have short ids like JOB-0007 (shown in the workspace data). Use them when calling tools and when talking about jobs. If it's unclear which job the recruiter means, ask instead of guessing.
+- For edits, only include the fields the recruiter asked to change, with the new values exactly as they said them.
 - Everything else (searching for candidates, CSV upload, scoring, emails, replies, meetings, changing statuses) is NOT available yet. If asked, say clearly it's coming soon. Never describe these as things you can already do.
 - Several recruiters share this workspace; each has their own private chat with you. The activity log below names who did what and marks it "(you)" for the person you're talking to or "(teammate)" for someone else. Only say "you" for "(you)" entries; for "(teammate)" entries use their name.
 - The recruiter can also do everything by hand in the app. The activity log shows what happened, including actions done by hand; take it into account.
@@ -151,8 +154,88 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
+      async ({ job, changes }) => {
+        // Look the job up first, so a wrong id gets a clear answer instead of a broken card.
+        let found;
+        try {
+          found = await resolveJob(job);
+        } catch {
+          return `There is no job "${job}". Check the job id in the workspace data, or ask the recruiter which job they mean.`;
+        }
+        // Drop empty/undefined values the model may send for fields it isn't changing.
+        const cleaned = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined && v !== null));
+        const parsed = updateJobInput.safeParse(cleaned);
+        if (!parsed.success) return `Those changes are not valid: ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`;
+        const current = await getJob(String(found._id));
+        const before = Object.fromEntries(
+          Object.keys(parsed.data).map((key) => [key, (current as Record<string, unknown>)[key] ?? null]),
+        );
+        const action = await proposeAction(userId, 'update_job', {
+          jobId: current.id,
+          jobCode: current.jobCode,
+          title: current.title,
+          changes: parsed.data,
+          before,
+        });
+        actionIds.push(String(action._id));
+        return `An edit card for ${current.jobCode} "${current.title}" (changing: ${Object.keys(parsed.data).join(', ')}) is now shown with Confirm/Cancel. Nothing is changed until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_job_edit',
+        description:
+          'Propose changes to an existing job (title, company, location, salary, skills, ...). Shows the recruiter an edit card (old -> new) to confirm. Only include the fields to change.',
+        schema: z.object({
+          job: z.string().describe('The job id, e.g. "JOB-0007"'),
+          changes: z
+            .object({
+              title: z.string().optional(),
+              company: z.string().optional(),
+              description: z.string().optional(),
+              seniority: z.string().optional(),
+              location: z.string().optional(),
+              salary: z.string().optional(),
+              remotePolicy: z.enum(REMOTE_POLICIES).optional(),
+              mustHaveSkills: z.array(z.string()).optional().describe('The FULL new list of must-have skills'),
+              niceToHaveSkills: z.array(z.string()).optional().describe('The FULL new list of nice-to-have skills'),
+            })
+            .describe('Only the fields to change, with their new values'),
+        }),
+      },
+    ),
+    tool(
+      async ({ job }) => {
+        let found;
+        try {
+          found = await resolveJob(job);
+        } catch {
+          return `There is no job "${job}". Check the job id in the workspace data, or ask the recruiter which job they mean.`;
+        }
+        const current = await getJob(String(found._id));
+        const action = await proposeAction(userId, 'delete_job', {
+          jobId: current.id,
+          jobCode: current.jobCode,
+          title: current.title,
+          candidateCount: current.totalCandidates,
+        });
+        actionIds.push(String(action._id));
+        return `A delete card for ${current.jobCode} "${current.title}" (${current.totalCandidates} candidates would be removed) is now shown with Confirm/Cancel. Nothing is deleted until the recruiter presses Confirm.`;
+      },
+      {
+        name: 'propose_job_delete',
+        description:
+          'Propose deleting a job and its candidates. Shows the recruiter a red confirmation card. Only use when the recruiter clearly asks to delete/remove a job.',
+        schema: z.object({ job: z.string().describe('The job id, e.g. "JOB-0007"') }),
+      },
+    ),
+    tool(
       async ({ jobId: id }) => {
-        const candidates = await listCandidates(id);
+        let found;
+        try {
+          found = await resolveJob(id); // accepts JOB-0007 or the long id
+        } catch {
+          return `There is no job "${id}". Check the job id in the workspace data.`;
+        }
+        const candidates = await listCandidates(String(found._id));
         if (candidates.length === 0) return 'This job has no candidates yet.';
         // Compact on purpose (context budget): top 10, short reasons, and a count of the rest.
         const top = candidates
@@ -164,7 +247,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       {
         name: 'list_job_candidates',
         description: "List a job's top 10 candidates (best score first) with score, status and reason. Use the job id from the workspace data.",
-        schema: z.object({ jobId: z.string().describe('The job id, e.g. from the workspace data') }),
+        schema: z.object({ jobId: z.string().describe('The job id, e.g. "JOB-0007"') }),
       },
     ),
   ];

@@ -5,6 +5,7 @@ import { ensureRecruiter } from './auth/recruiter.js';
 import { loadConfig, type Config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db.js';
 import { createMailer } from './email/mailer.js';
+import { ensureJobNumbers } from './jobs/service.js';
 import { createLogger } from './logger.js';
 
 let config: Config;
@@ -22,6 +23,10 @@ let server: Server | undefined;
 async function start(): Promise<void> {
   // Don't accept traffic until the database is reachable.
   await connectDatabase(config.mongodbUri, logger);
+
+  // Jobs created before job numbers existed get one now (JOB-0001, ...), oldest first.
+  const numbered = await ensureJobNumbers();
+  if (numbered > 0) logger.info({ count: numbered }, 'Gave job numbers to existing jobs');
 
   // A brand-new database gets the recruiter account from .env automatically,
   // so whoever runs the project can log in straight away.

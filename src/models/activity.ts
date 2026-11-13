@@ -20,6 +20,7 @@ export type Actor = (typeof ACTORS)[number];
 export const ACTIVITY_TYPES = [
   'job_created',
   'job_updated',
+  'job_deleted',
   'candidates_added',
   'candidate_scored',
   'status_changed',

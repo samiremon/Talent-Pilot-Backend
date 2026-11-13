@@ -80,7 +80,7 @@ export async function buildAssistantContext({ jobId, currentUserId, activityLimi
       .filter(([, n]) => n > 0)
       .map(([status, n]) => `${n} ${STATUS_LABELS[status as CandidateStatus]}`)
       .join(', ');
-    const base = `- "${clean(String(job.title), 120)}" (id ${job.id}, ${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}`;
+    const base = `- ${job.jobCode ?? job.id} "${clean(String(job.title), 120)}" (${job.status}): ${job.totalCandidates} candidates${breakdown ? `: ${breakdown}` : ''}`;
     if (!detailed) return base;
     const skills = job.mustHaveSkills.length ? ` | must-have: ${clean(job.mustHaveSkills.join(', '), 160)}` : '';
     return `${base}${skills} ← open on screen`;

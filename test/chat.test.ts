@@ -67,7 +67,7 @@ describe('chat', () => {
       .send({ fields: { salary: '$95k - $110k', title: 'Senior React Engineer' } })
       .expect(200);
     expect(confirmed.body.card.status).toBe('confirmed');
-    expect(confirmed.body.message.text).toBe('Done: the job "Senior React Engineer" was created.');
+    expect(confirmed.body.message.text).toBe('Done: the job "Senior React Engineer" (JOB-0001) was created.');
 
     const job = await JobModel.findById(confirmed.body.card.result.jobId).lean();
     expect(job).toMatchObject({ title: 'Senior React Engineer', salary: '$95k - $110k' });

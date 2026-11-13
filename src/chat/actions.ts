@@ -10,7 +10,7 @@
  */
 import { Types } from 'mongoose';
 import { AppError } from '../errors.js';
-import { createJob, createJobInput } from '../jobs/service.js';
+import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
 import { ActivityModel } from '../models/activity.js';
 import { PendingActionModel, type ActionType } from '../models/chat.js';
 
@@ -80,13 +80,33 @@ export async function confirmAction(actionId: string, userId: string, edits?: Re
           userId: new Types.ObjectId(userId), // whose AI proposed it
           message: 'Proposed by the AI from a pasted job description, then reviewed and confirmed in the chat',
         });
-        result = { jobId: job.id, title: job.title };
+        result = { jobId: job.id, title: job.title, jobCode: job.jobCode };
+        break;
+      }
+      case 'update_job': {
+        // payload = { jobId, jobCode, title, changes: {...}, before: {...} }. The recruiter may
+        // have adjusted the NEW values on the card ("edits"), which win.
+        const payload = action.payload as { jobId: string; changes: Record<string, unknown> };
+        const changes = updateJobInput.parse({ ...payload.changes, ...(edits ?? {}) });
+        const job = await updateJob(payload.jobId, changes, { userId, actor: 'ai' });
+        result = { jobId: job.id, title: job.title, jobCode: job.jobCode };
+        break;
+      }
+      case 'delete_job': {
+        const payload = action.payload as { jobId: string };
+        const deleted = await deleteJob(payload.jobId, { userId, actor: 'ai' });
+        result = { title: deleted.title, jobCode: deleted.jobCode, deletedCandidates: deleted.deletedCandidates };
         break;
       }
       default:
         throw new AppError(400, 'UNKNOWN_ACTION', 'Unknown action');
     }
-    claimed.set({ result, payload: { ...(action.payload as object), ...(edits ?? {}) } });
+    // Keep what was actually done on the card (the recruiter's edits included).
+    const finalPayload =
+      action.type === 'update_job'
+        ? { ...(action.payload as object), changes: { ...(action.payload as { changes: object }).changes, ...(edits ?? {}) } }
+        : { ...(action.payload as object), ...(edits ?? {}) };
+    claimed.set({ result, payload: finalPayload });
     await claimed.save();
     return presentAction(claimed);
   } catch (err) {

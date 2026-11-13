@@ -15,6 +15,9 @@ export const JOB_STATUSES = ['active', 'paused', 'closed'] as const;
 
 const jobSchema = new Schema(
   {
+    // Short readable number shown as "JOB-0007" (see models/counter.ts). Recruiters and the
+    // AI use it to refer to a job ("delete JOB-0007").
+    jobNumber: { type: Number, default: null },
     title: { type: String, required: true, trim: true, maxlength: 200 },
     company: { type: String, trim: true, maxlength: 200, default: null },
 
@@ -48,6 +51,8 @@ const jobSchema = new Schema(
 
 // Newest jobs first is the usual way to list them.
 jobSchema.index({ createdAt: -1 });
+// No two jobs share a number (jobs created before numbering existed are filled in at startup).
+jobSchema.index({ jobNumber: 1 }, { unique: true, partialFilterExpression: { jobNumber: { $type: 'number' } } });
 
 export type Job = InferSchemaType<typeof jobSchema>;
 export const JobModel = model('Job', jobSchema);
