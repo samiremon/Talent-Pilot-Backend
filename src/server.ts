@@ -1,15 +1,18 @@
 import { createApp } from './app.js';
+import { loadConfig, type Config } from './config.js';
 
-const port = Number(process.env.PORT ?? 4000);
-const corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+let config: Config;
+try {
+  config = loadConfig();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+}
 
-const app = createApp({ corsOrigins });
+const app = createApp({ corsOrigins: config.corsOrigins });
 
-const server = app.listen(port, () => {
-  console.log(`TalentPilot API listening on http://localhost:${port}`);
+const server = app.listen(config.port, () => {
+  console.log(`TalentPilot API listening on http://localhost:${config.port} (${config.nodeEnv})`);
 });
 
 function shutdown(signal: string): void {
