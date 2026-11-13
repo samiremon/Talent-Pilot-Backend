@@ -3,6 +3,7 @@
  *
  *   POST /jobs/:id/candidates/csv    upload a CSV (form field "file") -> candidates added,
  *                                    duplicates skipped, and a scoring task started
+ *   POST /jobs/:id/candidates        add ONE candidate by hand -> scoring started
  *   POST /jobs/:id/score             score every candidate that has no score yet
  *   GET  /jobs/:id/tasks             the job's latest background tasks
  *   GET  /jobs/:id/events            LIVE task updates (Server-Sent Events): the page stays
@@ -13,20 +14,14 @@
  */
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
-import { addCandidates } from '../candidates/addCandidates.js';
 import { AppError, asyncHandler } from '../errors.js';
 import { resolveJob } from '../jobs/service.js';
-import { CandidateModel } from '../models/candidate.js';
-import { TaskModel } from '../models/task.js';
-import type { TaskEvents } from '../tasks/events.js';
-import type { TaskQueue } from '../tasks/queue.js';
-import { createTask, listTasks, presentTask } from '../tasks/service.js';
-import { parseCandidatesCsv } from './csv.js';
+import { listTasks } from '../tasks/service.js';
+import { manualCandidateInput, addManualCandidate } from './manual.js';
+import { importCsv, startScoring as startScoringFn, type SourcingDeps } from './service.js';
 
-export interface SourcingDeps {
-  queue: TaskQueue;
-  events: TaskEvents;
-}
+export type { SourcingDeps } from './service.js';
+export { startScoring, importCsv } from './service.js';
 
 // Uploads stay in memory (never written to disk), max 2 MB, one file.
 const upload = multer({
@@ -38,33 +33,6 @@ const upload = multer({
     else done(new AppError(400, 'NOT_A_CSV', 'Please upload a .csv file.'));
   },
 });
-
-/**
- * Starts scoring the job's unscored candidates in the background, unless a scoring task
- * is already queued/running for this job (then that one is returned instead).
- */
-export async function startScoring({ queue, events }: SourcingDeps, jobId: string, userId: string | null) {
-  const busy = await TaskModel.findOne({ jobId, type: 'score_candidates', status: { $in: ['queued', 'running'] } }).lean();
-  if (busy) return presentTask(busy);
-  const pending = await CandidateModel.countDocuments({ jobId, score: null, scoreReason: null });
-  const task = await createTask(events, {
-    jobId,
-    type: 'score_candidates',
-    userId,
-    total: pending,
-    message: pending ? `Waiting to score ${pending} candidate${pending === 1 ? '' : 's'}…` : 'Nothing to score.',
-  });
-  await queue.enqueue('score_candidates', { taskId: task.id, jobId, userId });
-  return task;
-}
-
-/** CSV text -> candidates added (duplicates skipped) -> scoring started if anyone new. */
-export async function importCsv(deps: SourcingDeps, jobId: string, csvText: string, userId: string) {
-  const people = parseCandidatesCsv(csvText);
-  const result = await addCandidates(jobId, 'csv', people, 'recruiter', userId);
-  const task = result.added > 0 ? await startScoring(deps, jobId, userId) : null;
-  return { ...result, rows: people.length, task };
-}
 
 export function sourcingRouter(deps: SourcingDeps): Router {
   const router = Router();
@@ -89,10 +57,19 @@ export function sourcingRouter(deps: SourcingDeps): Router {
   );
 
   router.post(
+    '/:id/candidates',
+    asyncHandler(async (req, res) => {
+      const job = await resolveJob(req.params.id as string);
+      const input = manualCandidateInput.parse(req.body);
+      res.status(201).json(await addManualCandidate(deps, String(job._id), input, req.user!.id));
+    }),
+  );
+
+  router.post(
     '/:id/score',
     asyncHandler(async (req, res) => {
       const job = await resolveJob(req.params.id as string);
-      res.status(202).json({ task: await startScoring(deps, String(job._id), req.user!.id) });
+      res.status(202).json({ task: await startScoringFn(deps, String(job._id), req.user!.id) });
     }),
   );
 

@@ -23,7 +23,10 @@ import type { Ai, TokenUsage } from '../ai/client.js';
 import { extractJob } from '../ai/extractJob.js';
 import { recordUsage } from '../ai/usage.js';
 import { buildAssistantContext, clean } from '../assistant/context.js';
+import { suggestEmailFix } from '../auth/emailCheck.js';
+import { planCandidates } from '../candidates/addCandidates.js';
 import { getJob, listCandidates, resolveJob, updateJobInput } from '../jobs/service.js';
+import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
 import { proposeAction } from './actions.js';
 
@@ -34,10 +37,11 @@ How you work:
 - You can NOT change anything yourself. Tools that "create" or "change" things only PROPOSE: the app shows the recruiter a card with Confirm/Cancel. Never say something was created/sent/changed unless the conversation shows the recruiter confirmed it.
 - When the recruiter pastes a job description (or asks to create a job from one), call propose_job_from_description. Then briefly say what you found (e.g. the title and anything important that was missing). Do NOT write instructions about checking the card or pressing Confirm: the app adds that sentence itself.
 - Never invent facts about jobs or candidates. Use the workspace data below and your tools. If you don't know, say so.
-- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) edit a job (propose_job_edit) or delete a job (propose_job_delete), each shown as a card to confirm, (3) answer questions about the recruiter's jobs and candidates using the workspace data and your tools.
+- What you can do RIGHT NOW: (1) turn a pasted job description into a job card to confirm, (2) edit a job (propose_job_edit) or delete a job (propose_job_delete), (3) add ONE candidate to a job (propose_add_candidate), each shown as a card to confirm; after adding, the candidate is scored automatically, (4) answer questions about the recruiter's jobs and candidates using the workspace data and your tools. Candidates can also be added in bulk with a CSV (the 📎 button in the chat, or Upload CSV on the job page).
+- When adding a candidate, use ONLY details the recruiter gave you. Put their experience/skills description in profileText, their job title in headline. Leave anything not mentioned empty; never invent emails, links or experience. If no job is open on screen and it's unclear which job, ask which job first.
 - Jobs have short ids like JOB-0007 (shown in the workspace data). Use them when calling tools and when talking about jobs. If it's unclear which job the recruiter means, ask instead of guessing.
 - For edits, only include the fields the recruiter asked to change, with the new values exactly as they said them.
-- Everything else (searching for candidates, CSV upload, scoring, emails, replies, meetings, changing statuses) is NOT available yet. If asked, say clearly it's coming soon. Never describe these as things you can already do.
+- Everything else (web search for candidates, emails, replies, meetings, changing statuses) is NOT available yet. If asked, say clearly it's coming soon. Never describe these as things you can already do.
 - Several recruiters share this workspace; each has their own private chat with you. The activity log below names who did what and marks it "(you)" for the person you're talking to or "(teammate)" for someone else. Only say "you" for "(you)" entries; for "(teammate)" entries use their name.
 - The recruiter can also do everything by hand in the app. The activity log shows what happened, including actions done by hand; take it into account.
 - Older long messages (like pasted job descriptions) appear shortened in the conversation; propose_job_from_description still reads the full original text.
@@ -225,6 +229,56 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
         description:
           'Propose deleting a job and its candidates. Shows the recruiter a red confirmation card. Only use when the recruiter clearly asks to delete/remove a job.',
         schema: z.object({ job: z.string().describe('The job id, e.g. "JOB-0007"') }),
+      },
+    ),
+    tool(
+      async ({ job, candidate }) => {
+        // The open job page is the default; otherwise the AI must say which job.
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job this candidate is for (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const parsed = manualCandidateInput.safeParse(candidate);
+        if (!parsed.success) return `Those details are not valid: ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`;
+        const plan = await planCandidates(found._id, [parsed.data]);
+        if (plan.invalid) return 'An email address or a profile link is needed to add a candidate. Ask the recruiter for one.';
+        if (plan.duplicates) return `${parsed.data.name} is already a candidate for ${found.title} (same email or profile link). Nothing was added.`;
+
+        const current = await getJob(String(found._id));
+        // Point out likely typos instead of silently changing what the recruiter typed.
+        const fix = suggestEmailFix(parsed.data.email);
+        const notes = [
+          ...(fix ? [`The email domain "${parsed.data.email!.split('@')[1]}" looks like a typo of ${fix}. Please check it.`] : []),
+          ...(!parsed.data.profileText ? ['No description given: without one the candidate can\'t be scored.'] : []),
+        ];
+        const action = await proposeAction(
+          userId,
+          'add_candidate',
+          { jobId: current.id, jobCode: current.jobCode, title: current.title, candidate: parsed.data },
+          notes,
+        );
+        actionIds.push(String(action._id));
+        return `An "Add candidate" card for ${parsed.data.name} (job ${current.jobCode}) is now shown with Confirm/Cancel${fix ? `, with a warning that the email may be a typo of ${fix}` : ''}. Nothing is added until the recruiter presses Confirm; then the candidate is scored automatically.`;
+      },
+      {
+        name: 'propose_add_candidate',
+        description:
+          'Propose adding ONE candidate to a job. Shows an editable card to confirm; on Confirm the candidate is added and AI-scored. Use only details the recruiter gave.',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          candidate: z.object({
+            name: z.string().describe('Full name'),
+            email: z.string().optional().describe('Email exactly as the recruiter wrote it (do not correct it)'),
+            profileUrl: z.string().optional().describe('LinkedIn/GitHub/portfolio link, if given'),
+            headline: z.string().optional().describe('Their job title, e.g. "Software Engineer"'),
+            location: z.string().optional(),
+            profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
+          }),
+        }),
       },
     ),
     tool(

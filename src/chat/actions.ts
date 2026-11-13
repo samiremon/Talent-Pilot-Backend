@@ -12,7 +12,8 @@ import { Types } from 'mongoose';
 import { AppError } from '../errors.js';
 import { addCandidates, type NewCandidate } from '../candidates/addCandidates.js';
 import { createJob, createJobInput, deleteJob, updateJob, updateJobInput } from '../jobs/service.js';
-import { startScoring, type SourcingDeps } from '../sourcing/routes.js';
+import { addManualCandidate } from '../sourcing/manual.js';
+import { startScoring, type SourcingDeps } from '../sourcing/service.js';
 import { ActivityModel } from '../models/activity.js';
 import { PendingActionModel, type ActionType } from '../models/chat.js';
 
@@ -120,6 +121,15 @@ export async function confirmAction(
         result = { jobId: payload.jobId, ...added, taskId: task?.id ?? null };
         break;
       }
+      case 'add_candidate': {
+        // payload = { jobId, jobCode, title, candidate: {...} }. The recruiter may have
+        // corrected fields on the card (e.g. a typo in the email): their edits win.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; candidate: Record<string, unknown> };
+        const added = await addManualCandidate(deps, payload.jobId, { ...payload.candidate, ...(edits ?? {}) }, userId);
+        result = { jobId: payload.jobId, candidateId: added.candidateId, name: added.name, taskId: added.task?.id ?? null };
+        break;
+      }
       default:
         throw new AppError(400, 'UNKNOWN_ACTION', 'Unknown action');
     }
@@ -127,7 +137,9 @@ export async function confirmAction(
     const finalPayload =
       action.type === 'update_job'
         ? { ...(action.payload as object), changes: { ...(action.payload as { changes: object }).changes, ...(edits ?? {}) } }
-        : { ...(action.payload as object), ...(edits ?? {}) };
+        : action.type === 'add_candidate'
+          ? { ...(action.payload as object), candidate: { ...(action.payload as { candidate: object }).candidate, ...(edits ?? {}) } }
+          : { ...(action.payload as object), ...(edits ?? {}) };
     claimed.set({ result, payload: finalPayload });
     await claimed.save();
     return presentAction(claimed);

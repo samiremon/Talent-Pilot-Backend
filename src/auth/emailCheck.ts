@@ -35,6 +35,12 @@ const TYPO_FIXES: Record<string, string> = {
   'iclod.com': 'icloud.com',
 };
 
+/** "rahim@gmai.com" -> "gmail.com" (a likely fix for a typo'd domain), else null. */
+export function suggestEmailFix(email: string | null | undefined): string | null {
+  const domain = email?.split('@')[1]?.trim().toLowerCase();
+  return domain ? (TYPO_FIXES[domain] ?? null) : null;
+}
+
 /** Format check only (no network). */
 export function emailFormatError(email: string): string | null {
   return z.email().safeParse(email).success ? null : 'This email address is not valid. Please check it.';

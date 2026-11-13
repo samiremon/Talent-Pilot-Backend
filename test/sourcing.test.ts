@@ -279,3 +279,55 @@ describe('attaching a CSV in the chat', () => {
     expect(await CandidateModel.countDocuments()).toBe(0);
   });
 });
+
+describe('adding one candidate by hand', () => {
+  const SAMIR = {
+    name: 'Samir Yeasir Emon',
+    email: 'samiremon2001@gmai.com',
+    headline: 'Software Engineer',
+    profileText: '2 years of experience with FastAPI.',
+  };
+
+  it('adds and scores them from the job page form', async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    const res = await agent.post(`/jobs/${job.jobCode}/candidates`).send(SAMIR).expect(201);
+    expect(res.body).toMatchObject({ name: 'Samir Yeasir Emon', task: { type: 'score_candidates' } });
+    await queue.idle();
+    const samir = await CandidateModel.findById(res.body.candidateId).lean();
+    expect(samir).toMatchObject({ source: 'manual', headline: 'Software Engineer' });
+    expect(samir?.score).not.toBeNull();
+    expect(samir?.scoreReason).toBeTruthy();
+  });
+
+  it('refuses a duplicate and a candidate with no way to contact them', async () => {
+    const { app } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    await agent.post(`/jobs/${job.id}/candidates`).send(SAMIR).expect(201);
+    const dup = await agent.post(`/jobs/${job.id}/candidates`).send({ ...SAMIR, email: 'SAMIREMON2001@gmai.com' }).expect(409);
+    expect(dup.body.error.message).toBe('Samir Yeasir Emon is already a candidate for this job (same email or profile link).');
+    const none = await agent.post(`/jobs/${job.id}/candidates`).send({ name: 'No Contact' }).expect(400);
+    expect(none.body.error.code).toBe('CANDIDATE_INVALID');
+    await agent.post(`/jobs/${job.id}/candidates`).send({ email: 'x@example.com' }).expect(400); // no name
+  });
+
+  it("the AI's card adds them only on Confirm, with the recruiter's corrected email", async () => {
+    const { app, queue } = makeApp();
+    const agent = await loggedIn(app);
+    const job = (await agent.post('/jobs').send(JOB).expect(201)).body.job;
+    const user = await (await import('../src/models/user.js')).UserModel.findOne({ email: RECRUITER.email });
+    const { proposeAction } = await import('../src/chat/actions.js');
+    // What the AI's propose_add_candidate tool creates:
+    const card = await proposeAction(String(user!._id), 'add_candidate', { jobId: job.id, jobCode: job.jobCode, title: job.title, candidate: SAMIR });
+    expect(await CandidateModel.countDocuments()).toBe(0);
+
+    const res = await agent.post(`/chat/actions/${card._id}/confirm`).send({ fields: { email: 'samiremon2001@gmail.com' } }).expect(200);
+    expect(res.body.message.text).toMatch(/^Done: added Samir Yeasir Emon to JOB-0001\. AI scoring has started/);
+    await queue.idle();
+    const samir = await CandidateModel.findOne({ name: 'Samir Yeasir Emon' }).lean();
+    expect(samir?.email).toBe('samiremon2001@gmail.com'); // the fix from the card won
+    expect(samir?.score).not.toBeNull();
+  });
+});

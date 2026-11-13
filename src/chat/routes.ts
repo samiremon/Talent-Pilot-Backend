@@ -13,7 +13,7 @@ import { z } from 'zod';
 import type { Ai } from '../ai/client.js';
 import { AppError, asyncHandler } from '../errors.js';
 import multer from 'multer';
-import type { SourcingDeps } from '../sourcing/routes.js';
+import type { SourcingDeps } from '../sourcing/service.js';
 import { cancelAction, confirmAction } from './actions.js';
 import { attachCsv } from './attachments.js';
 import { addSystemNote, listMessages, sendMessage } from './service.js';
@@ -68,7 +68,9 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
           ? `Done: the job ${name} was created.`
           : card.type === 'update_job'
             ? `Done: the job ${name} was updated.`
-            : card.type === 'import_csv'
+            : card.type === 'add_candidate'
+              ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; click their row on the job page to see the score and reason.`
+              : card.type === 'import_csv'
               ? `Done: imported ${imported?.added ?? 0} candidate(s)${imported?.duplicates ? `, skipped ${imported.duplicates} duplicate(s)` : ''}.${imported?.taskId ? ' AI scoring has started: you can follow it on the card above or on the job page.' : ''}`
               : `Done: the job ${name} was deleted, with ${result?.deletedCandidates ?? 0} candidate(s).`;
       const note = await addSystemNote(req.user!.id, text, card.type === 'delete_job' ? null : result?.jobId);
