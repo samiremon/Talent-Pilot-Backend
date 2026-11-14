@@ -20,6 +20,7 @@ import { jobCode } from '../models/counter.js';
 import { JobModel } from '../models/job.js';
 import { MeetingModel, ReplyModel } from '../models/reply.js';
 import { moveCandidate } from './processing.js';
+import { notify } from '../notifications/service.js';
 
 /** "Thu 19 Nov, 10:00 (Dhaka time)" */
 export function slotLabel(date: Date): string {
@@ -99,6 +100,14 @@ export function bookingRouter(): Router {
           userId: recruiterId,
           message: `${candidate.name} booked a call: ${slotLabel(slot)}`,
         });
+        await notify({
+          userId: recruiterId,
+          type: 'meeting',
+          jobId: meeting.jobId as Types.ObjectId,
+          candidateId: candidate._id,
+          replyId: meeting.replyId as Types.ObjectId | null,
+          text: `${candidate.name} booked a call: ${slotLabel(slot)}`,
+        }).catch(() => undefined);
         // Tell the recruiter in the chat.
         if (recruiterId && job) {
           await ChatMessageModel.create({

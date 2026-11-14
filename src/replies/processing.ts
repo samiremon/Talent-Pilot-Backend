@@ -38,6 +38,7 @@ import { looksLikeInjection } from '../sourcing/scoring.js';
 import type { TaskEvents } from '../tasks/events.js';
 import type { Processor } from '../tasks/queue.js';
 import { updateTask } from '../tasks/service.js';
+import { notify } from '../notifications/service.js';
 
 export interface ReplySettings {
   /** Send the drafted response without waiting for approval (never for questions / flagged). */
@@ -262,6 +263,15 @@ export function replyProcessor({ ai, events, mailer, settings }: { ai: Ai; event
         message: `${candidate.name} replied: ${LABEL_NAMES[label]}.${response ? (settings.autoSend && !flagged && label !== 'question' ? ' Response sent automatically.' : ' A response is drafted for your approval.') : ''}${stopped.modifiedCount ? ` ${stopped.modifiedCount} follow-up(s) stopped.` : ''} (${code})`,
       });
       await notifyRecruiter(String(reply._id));
+      // The bell in the top bar.
+      await notify({
+        userId: reply.userId,
+        type: 'reply',
+        jobId: job._id,
+        candidateId: candidate._id,
+        replyId: reply._id,
+        text: `${candidate.name} replied: ${LABEL_NAMES[label]}${response && !(settings.autoSend && !flagged && label !== 'question') ? ' · response waiting for you' : ''}`,
+      }).catch(() => undefined);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       if (attempt.isLast) {
