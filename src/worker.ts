@@ -43,7 +43,7 @@ const search = createSearchClient(config.search.serperKey);
 const queue = createBullQueue(config.redisUrl);
 const worker = startWorker(
   config.redisUrl,
-  buildProcessors({ ai, events, search, queue: () => queue, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach }),
+  buildProcessors({ ai, events, search, queue: () => queue, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach, replies: config.replies }),
   logger,
 );
 logger.info({ ai: ai.mode, search: search.mode }, 'Worker ready, waiting for tasks');

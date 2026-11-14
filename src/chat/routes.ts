@@ -85,6 +85,10 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'send_reply'
+              ? `Done: sent the response to ${(card.result as { candidateName?: string } | null)?.candidateName ?? 'the candidate'}.`
+            : card.type === 'simulate_reply'
+              ? `Done: ${(card.result as { candidateName?: string } | null)?.candidateName ?? 'The candidate'}'s reply was received. I'm reading it now; I'll post what they want and a drafted response here in a moment.`
             : card.type === 'create_campaign'
               ? (() => {
                   const r = card.result as { jobCode?: string; candidates?: number; steps?: number[] } | null;

@@ -11,6 +11,7 @@ import type { Processor, TaskQueue } from './queue.js';
 import { createMemoryMailer, type Mailer } from '../email/mailer.js';
 import { draftOutreachProcessor } from '../outreach/drafting.js';
 import { sendOutreachProcessor, type OutreachSettings } from '../outreach/sending.js';
+import { replyProcessor, type ReplySettings } from '../replies/processing.js';
 
 export interface ProcessorDeps {
   ai: Ai;
@@ -24,12 +25,20 @@ export interface ProcessorDeps {
    *  an in-memory mailer, sandbox mode, 50 a day, real-length days. */
   outreachMailer?: Mailer;
   outreach?: OutreachSettings;
+  /** Candidate replies: auto-send setting and the app's address (booking links). */
+  replies?: ReplySettings;
 }
 
 export function buildProcessors(deps: ProcessorDeps): Record<string, Processor> {
   return {
     score_candidates: scoreCandidatesProcessor(deps),
     draft_outreach: draftOutreachProcessor(deps),
+    process_reply: replyProcessor({
+      ai: deps.ai,
+      events: deps.events,
+      mailer: deps.outreachMailer ?? createMemoryMailer(),
+      settings: deps.replies ?? { autoSend: false, appUrl: 'http://localhost:8080' },
+    }),
     send_outreach: sendOutreachProcessor({
       events: deps.events,
       mailer: deps.outreachMailer ?? createMemoryMailer(),

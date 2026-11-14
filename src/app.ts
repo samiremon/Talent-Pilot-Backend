@@ -21,6 +21,10 @@ import { jobsRouter, statsRouter } from './jobs/routes.js';
 import { sourcingRouter } from './sourcing/routes.js';
 import { outreachRouter } from './outreach/routes.js';
 import { unsubscribeRouter } from './outreach/unsubscribe.js';
+import { bookingRouter } from './replies/booking.js';
+import type { ReplySettings } from './replies/processing.js';
+import { repliesRouter, simulateReplyRouter } from './replies/routes.js';
+import { createMemoryMailer, type Mailer } from './email/mailer.js';
 import type { OutreachSettings } from './outreach/sending.js';
 import { createMemoryEvents, type TaskEvents } from './tasks/events.js';
 import { createInlineQueue, type TaskQueue } from './tasks/queue.js';
@@ -44,6 +48,10 @@ export interface AppOptions {
   events?: TaskEvents;
   /** Outreach sending rules (sandbox/live, daily limit, day length). Default: sandbox. */
   outreach?: OutreachSettings;
+  /** Candidate replies (auto-send setting, app address for booking links). Default: approve each. */
+  replies?: ReplySettings;
+  /** Sends approved answers to replies (sandbox = Mailpit). Default (tests): in memory. */
+  outreachMailer?: Mailer;
   /** Web search mode, shown in the Find candidates dialog. Default: sample. */
   searchMode?: 'serper' | 'sample';
   /** Optional token limits/budgets for the token dashboard (see config.ts). */
@@ -67,6 +75,8 @@ export function createApp({
   queue = createInlineQueue(() => ({})),
   searchMode = 'sample',
   outreach = { mode: 'sandbox', dailyLimit: 50, daySeconds: 86_400 },
+  replies = { autoSend: false, appUrl: 'http://localhost:8080' },
+  outreachMailer = createMemoryMailer(),
 }: AppOptions): Express {
   const app = express();
 
@@ -129,14 +139,18 @@ export function createApp({
   // Public: candidates' unsubscribe links (no login; the link's random token is the key).
   // The one-click POST from mail apps sends a form body, so urlencoded bodies are read here.
   app.use('/unsubscribe', express.urlencoded({ extended: false, limit: '2kb' }), unsubscribeRouter());
+  // Public: the booking link in the AI's answer (pick a time -> Meeting booked).
+  app.use('/book', express.urlencoded({ extended: false, limit: '2kb' }), bookingRouter());
   // Everything below needs a logged-in recruiter: requireAuth answers 401 otherwise.
   // Sourcing first (CSV upload, scoring, live events), then the rest of /jobs.
   app.use('/jobs', requireAuth, sourcingRouter({ queue, events, searchMode }));
   app.use('/jobs', requireAuth, outreachRouter({ queue, events, outreach }));
+  app.use('/jobs', requireAuth, repliesRouter({ queue, events, mailer: outreachMailer, replies }));
+  app.use('/simulate-reply', requireAuth, simulateReplyRouter({ queue, events, mailer: outreachMailer, replies }));
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
   app.use('/ai', requireAuth, aiRouter(ai));
-  app.use('/chat', requireAuth, chatRouter(ai, { queue, events, searchMode, outreach }));
+  app.use('/chat', requireAuth, chatRouter(ai, { queue, events, searchMode, outreach, replies, mailer: outreachMailer }));
   app.use('/activity', requireAuth, activityRouter(ai, aiLimits));
 
   // 5. Nothing matched -> 404. Any error thrown above -> one consistent JSON error.

@@ -115,24 +115,31 @@ export function createInlineQueue(processors: () => Record<string, Processor>): 
     async enqueue(type, message, options = {}) {
       // Same rule as BullMQ, so tests catch an id BullMQ would refuse.
       if ((options.key ?? message.taskId).includes(':')) throw new Error('Custom Id cannot contain :');
-      const run = (async () => {
-        await new Promise((r) => (options.delayMs ? setTimeout(r, options.delayMs) : setImmediate(r)));
-        const processor = processors()[type];
-        if (!processor) return;
-        for (let number = 1; number <= DEFAULT_JOB_OPTIONS.attempts; number++) {
-          try {
-            await processor(message, { number, isLast: number === DEFAULT_JOB_OPTIONS.attempts });
-            return;
-          } catch {
-            // try again (no waiting in tests)
+      const start = () => {
+        const run = (async () => {
+          await new Promise((r) => setImmediate(r));
+          const processor = processors()[type];
+          if (!processor) return;
+          for (let number = 1; number <= DEFAULT_JOB_OPTIONS.attempts; number++) {
+            try {
+              await processor(message, { number, isLast: number === DEFAULT_JOB_OPTIONS.attempts });
+              return;
+            } catch {
+              // try again (no waiting in tests)
+            }
           }
-        }
-      })();
-      running.add(run);
-      void run.finally(() => running.delete(run));
+        })();
+        running.add(run);
+        void run.finally(() => running.delete(run));
+      };
+      // A delayed task (e.g. a Day 3 follow-up) only counts as "running" once its time comes,
+      // like in BullMQ: idle() doesn't wait days for it. unref: never keeps the process alive.
+      if (options.delayMs) setTimeout(start, options.delayMs).unref();
+      else start();
     },
     isReady: () => true,
     async close() {},
+    /** Waits until nothing is running right now (tasks scheduled for later don't count). */
     async idle() {
       while (running.size) await Promise.all([...running]);
     },

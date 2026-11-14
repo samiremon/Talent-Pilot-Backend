@@ -18,6 +18,9 @@ export interface SourcingDeps {
   searchMode?: 'serper' | 'sample';
   /** Outreach sending rules (for the chat's campaign cards). */
   outreach?: { mode: 'sandbox' | 'live'; dailyLimit: number; daySeconds: number };
+  /** Candidate replies (for the chat's "send the response" card). */
+  replies?: { autoSend: boolean; appUrl: string };
+  mailer?: import('../email/mailer.js').Mailer;
 }
 
 /**

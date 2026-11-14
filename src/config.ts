@@ -93,6 +93,9 @@ const envSchema = z.object({
   // How long "one day" is for follow-ups (Day 3, Day 7). 86400 = a real day; set e.g. 60 in
   // a demo so the follow-ups arrive within minutes.
   OUTREACH_DAY_SECONDS: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).default(86_400)),
+  // Send the AI's drafted answers to candidate replies without waiting for approval.
+  // Off by default; even when on, questions and suspicious replies always wait for a person.
+  REPLY_AUTO_SEND: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['true', 'false']).default('false')).transform((v) => v === 'true'),
   // Serper (Google search API) for finding candidates on the web. Blank = sample mode.
   SERPER_API_KEY: optional(z.string().trim().min(20, 'looks too short (copy it from serper.dev)')),
   GROQ_API_KEY: optional(z.string().trim().startsWith('gsk_', 'must start with gsk_ (copy it from console.groq.com/keys)')),
@@ -138,6 +141,8 @@ export type Config = {
   ai: { apiKey?: string; models: { agent: string; bulk: string; safety: string } };
   /** Outreach emails: where they go, how many a day, how long a "day" is. */
   outreach: { mode: 'sandbox' | 'live'; sandboxHost: string; sandboxPort: number; dailyLimit: number; daySeconds: number; appUrl: string };
+  /** Candidate replies: auto-send the drafted answers? (default no) */
+  replies: { autoSend: boolean; appUrl: string };
   /** Web search for candidates. `serperKey` undefined = sample mode. */
   search: { serperKey?: string };
   /** Optional limits shown on the token dashboard. */
@@ -201,6 +206,7 @@ export function parseConfig(env: NodeJS.ProcessEnv): Config {
     },
     aiLimits: { dailyTokens: e.AI_DAILY_TOKEN_LIMIT, weekBudget: e.AI_TOKEN_BUDGET_WEEK, monthBudget: e.AI_TOKEN_BUDGET_MONTH },
     search: { serperKey: e.SERPER_API_KEY },
+    replies: { autoSend: e.REPLY_AUTO_SEND, appUrl: e.APP_URL.replace(/\/$/, '') },
     outreach: {
       mode: e.OUTREACH_MODE,
       sandboxHost: e.OUTREACH_SANDBOX_SMTP_HOST,

@@ -65,7 +65,7 @@ async function start(): Promise<void> {
     const memoryEvents = createMemoryEvents();
     events = memoryEvents;
     const inline = createInlineQueue(() =>
-      buildProcessors({ ai, events: memoryEvents, search, queue: () => inline, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach }),
+      buildProcessors({ ai, events: memoryEvents, search, queue: () => inline, outreachMailer: createOutreachMailer(config.outreach, config.smtp), outreach: config.outreach, replies: config.replies }),
     );
     queue = inline;
     logger.warn('No REDIS_URL: background tasks run inside the API process');
@@ -77,6 +77,8 @@ async function start(): Promise<void> {
     events,
     searchMode: search.mode,
     outreach: config.outreach,
+    replies: config.replies,
+    outreachMailer: createOutreachMailer(config.outreach, config.smtp),
     aiLimits: config.aiLimits,
     corsOrigins: config.corsOrigins,
     logger,

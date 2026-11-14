@@ -13,7 +13,7 @@
  */
 import { Schema, model, Types, type InferSchemaType } from 'mongoose';
 
-export const TASK_TYPES = ['score_candidates', 'source_candidates', 'draft_outreach', 'send_outreach'] as const;
+export const TASK_TYPES = ['score_candidates', 'source_candidates', 'draft_outreach', 'send_outreach', 'process_reply'] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 export const TASK_STATUSES = ['queued', 'running', 'done', 'failed'] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];

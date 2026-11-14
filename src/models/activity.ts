@@ -32,6 +32,7 @@ export const ACTIVITY_TYPES = [
   'outreach_drafted',
   'outreach_approved',
   'reply_received',
+  'reply_sent',
   'meeting_booked',
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

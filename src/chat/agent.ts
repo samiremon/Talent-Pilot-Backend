@@ -33,6 +33,7 @@ import type { Types } from 'mongoose';
 import { CandidateModel } from '../models/candidate.js';
 import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
 import { eligibleCandidates } from '../outreach/service.js';
+import { ReplyModel } from '../models/reply.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
 import { CANDIDATE_STATUSES, checkMove, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
 import { jobCode } from '../models/counter.js';
@@ -50,7 +51,7 @@ Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To EMAIL candidates (outreach, a campaign, "send them an email", a Day 0/3/7 sequence) use propose_campaign, and propose_approve_campaign to approve sending.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review; "reject" before contact means Not accepted, and it can be undone back to Accepted) or move them to any later status ("accept the top 5", "mark Rahim as hired"; "Rejected" is only after the interview), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Not available yet (say "coming soon"): replies, meetings. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review; "reject" before contact means Not accepted, and it can be undone back to Accepted) or move them to any later status ("accept the top 5", "mark Rahim as hired"; "Rejected" is only after the interview), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -441,6 +442,74 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
             location: z.string().optional(),
             profileText: z.string().optional().describe('Everything the recruiter said about their experience and skills'),
           }),
+        }),
+      },
+    ),
+    tool(
+      async ({ name, job, text }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const emailed = await OutreachMessageModel.distinct('candidateId', { jobId: found._id, status: 'sent' });
+        const q = name.trim().toLowerCase();
+        const people = (await CandidateModel.find({ _id: { $in: emailed } }, { name: 1 }).lean()).filter((c) => c.name.toLowerCase() === q || c.name.toLowerCase().includes(q));
+        if (people.length === 0) return `Nobody named "${clean(name, 60)}" in ${code} has been emailed yet, so there's nothing to reply to.`;
+        if (people.length > 1) return `Several emailed candidates match "${clean(name, 60)}": ${people.map((p) => p.name).join('; ')}. Ask which one.`;
+        const c = people[0]!;
+        const body = text.trim().slice(0, 4000);
+        const action = await proposeAction(userId, 'simulate_reply', { jobId: String(found._id), jobCode: code, candidateId: String(c._id), candidateName: c.name, body });
+        actionIds.push(String(action._id));
+        cardIntros.push(`Here's a card to simulate a reply from ${clean(c.name, 60)} (as if it came from their inbox). After you confirm, I'll classify it, update their status, stop their follow-ups and draft a response.`);
+        return `A "Simulate reply" card for ${c.name} is now shown with Confirm/Cancel.`;
+      },
+      {
+        name: 'propose_simulate_reply',
+        description:
+          'Propose simulating a reply from an emailed candidate (stands in for a real inbox): the given text arrives as their reply, then the AI classifies it, updates the status, stops follow-ups and drafts a response. Shows a card to confirm. Use when the recruiter asks to simulate / pretend / test a reply.',
+        schema: z.object({
+          name: z.string().describe("The candidate's name"),
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          text: z.string().describe('What the candidate replies, e.g. "Sounds great, can we talk Thursday?"'),
+        }),
+      },
+    ),
+    tool(
+      async ({ name, job }) => {
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const q = name.trim().toLowerCase();
+        const waiting = await ReplyModel.find({ jobId: found._id, 'response.status': 'draft' }).sort({ receivedAt: -1 }).lean();
+        const names = new Map((await CandidateModel.find({ _id: { $in: waiting.map((r) => r.candidateId) } }, { name: 1 }).lean()).map((c) => [String(c._id), c.name]));
+        const matches = waiting.filter((r) => (names.get(String(r.candidateId)) ?? '').toLowerCase().includes(q));
+        if (matches.length === 0) return `There's no drafted response waiting for "${clean(name, 60)}" in ${code}.`;
+        const r = matches[0]!;
+        const candidateName = names.get(String(r.candidateId)) ?? name;
+        const action = await proposeAction(userId, 'send_reply', {
+          jobId: String(found._id), jobCode: code, replyId: String(r._id), candidateName, label: r.label, theirReply: r.body.slice(0, 1000), subject: r.response?.subject, body: r.response?.body,
+        });
+        actionIds.push(String(action._id));
+        cardIntros.push(`Here's the drafted response to ${clean(candidateName, 60)}: check it, edit if needed, and press Send.`);
+        return `A "Send response" card for ${candidateName} is now shown with Send/Cancel.`;
+      },
+      {
+        name: 'propose_send_reply',
+        description: "Propose sending the AI's drafted response to a candidate's reply (it waits for approval). Shows the draft on a card to confirm. Use when the recruiter says to send / approve the answer to someone's reply.",
+        schema: z.object({
+          name: z.string().describe("The candidate's name"),
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
         }),
       },
     ),

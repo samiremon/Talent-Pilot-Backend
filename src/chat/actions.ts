@@ -17,6 +17,18 @@ import { deleteAllCandidates, deleteCandidate } from '../candidates/deleteCandid
 import { updateCandidateContact } from '../candidates/updateCandidate.js';
 import { changeStatuses } from '../candidates/statusChange.js';
 import { approveCampaign, createCampaign, SEQUENCES, type OutreachDeps } from '../outreach/service.js';
+import { sendResponse, simulateReply, type ReplyDeps } from '../replies/service.js';
+import { createMemoryMailer } from '../email/mailer.js';
+
+/** What the chat's reply cards need (the mailer sends approved answers; sandbox by default). */
+function replyDeps(deps: SourcingDeps): ReplyDeps {
+  return {
+    queue: deps.queue,
+    events: deps.events,
+    mailer: deps.mailer ?? createMemoryMailer(),
+    replies: deps.replies ?? { autoSend: false, appUrl: 'http://localhost:8080' },
+  };
+}
 
 /** The outreach settings for the chat's campaign cards (sandbox / 50 a day by default). */
 function outreachDeps(deps: SourcingDeps): OutreachDeps {
@@ -146,6 +158,25 @@ export async function confirmAction(
         // payload = { jobId, candidateId, name, ... }. Same function as the trash button.
         const payload = action.payload as { jobId: string; candidateId: string };
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
+        break;
+      }
+      case 'send_reply': {
+        // payload = { jobId, replyId, subject, body }. The recruiter may have edited the text.
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; replyId: string; candidateName?: string };
+        await sendResponse(replyDeps(deps), payload.jobId, payload.replyId, userId, {
+          subject: edits?.subject as string | undefined,
+          body: edits?.body as string | undefined,
+        });
+        result = { jobId: payload.jobId, replyId: payload.replyId, candidateName: payload.candidateName };
+        break;
+      }
+      case 'simulate_reply': {
+        // payload = { jobId, candidateId, candidateName, body, subject }: "pretend they answered this".
+        if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
+        const payload = action.payload as { jobId: string; candidateId: string; candidateName?: string; body: string; subject?: string };
+        const made = await simulateReply(replyDeps(deps), payload.jobId, payload.candidateId, { body: (edits?.body as string | undefined) ?? payload.body, subject: payload.subject }, userId);
+        result = { jobId: payload.jobId, replyId: made.replyId, taskId: made.task.id, candidateName: payload.candidateName };
         break;
       }
       case 'create_campaign': {
