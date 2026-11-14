@@ -104,16 +104,18 @@ describe('candidate replies', () => {
     const meeting = (await MeetingModel.findOne({ candidateId: ana._id }).lean())!;
     const page = await request(app).get(`/book/${meeting.token}`).expect(200);
     expect(page.text).toMatch(/Pick a time/);
-    expect(page.text.match(/name="slot"/g)?.length).toBe(9); // 3 working days x 3 times
+    // The free hours of the team calendar (live), each button carrying its exact time.
+    const offered = [...page.text.matchAll(/name="slot" value="([^"]+)"/g)].map((m) => m[1]!);
+    expect(offered.length).toBeGreaterThan(9);
     expect((await CandidateModel.findById(ana._id).lean())?.status).toBe('interested'); // opening changes nothing
 
-    const booked = await request(app).post(`/book/${meeting.token}`).type('form').send('slot=1').expect(200);
+    const booked = await request(app).post(`/book/${meeting.token}`).type('form').send(`slot=${encodeURIComponent(offered[1]!)}`).expect(200);
     expect(booked.text).toMatch(/You're booked/);
     expect((await CandidateModel.findById(ana._id).lean())?.status).toBe('meeting_booked');
     expect((await MeetingModel.findById(meeting._id).lean())?.status).toBe('booked');
-    const again = await request(app).post(`/book/${meeting.token}`).type('form').send('slot=2').expect(200);
+    const again = await request(app).post(`/book/${meeting.token}`).type('form').send(`slot=${encodeURIComponent(offered[2]!)}`).expect(200);
     expect(again.text).toMatch(/You're booked/); // the first choice stands
-    expect((await MeetingModel.findById(meeting._id).lean())?.slot).toEqual(meeting.slots[1]);
+    expect((await MeetingModel.findById(meeting._id).lean())?.slot).toEqual(new Date(offered[1]!));
     // One conversation for Ana, start to end: our email, her reply, the booked call.
     const list = (await agent.get(`/jobs/${job.id}/replies`).expect(200)).body;
     expect(list.conversations).toHaveLength(1);

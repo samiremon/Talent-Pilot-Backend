@@ -63,14 +63,19 @@ const meetingSchema = new Schema(
     replyId: { type: Types.ObjectId, ref: 'Reply', default: null },
     // Secret for the candidate's booking link /book/:token.
     token: { type: String, required: true, unique: true },
-    // The times offered (the mock "time-slot picker").
-    slots: { type: [Date], required: true },
+    // Old links kept their offered times here. Now the booking page always shows the
+    // team calendar's FREE hours live (see src/calendar/slots.ts), so this stays empty.
+    slots: { type: [Date], default: [] },
     status: { type: String, enum: ['offered', 'booked', 'cancelled'], default: 'offered' },
     slot: { type: Date, default: null }, // the chosen time
     bookedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
+
+// One booked call per hour for the whole team: a second booking of the same hour fails
+// in the database itself, even if two candidates click at the same moment.
+meetingSchema.index({ slot: 1 }, { unique: true, partialFilterExpression: { status: 'booked' } });
 
 export type Reply = InferSchemaType<typeof replySchema>;
 export type Meeting = InferSchemaType<typeof meetingSchema>;

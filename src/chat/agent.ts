@@ -14,6 +14,8 @@
  * Mock mode (no API key): a simple rule-based stand-in with the same behaviour for the
  * main case: paste a job description -> get a job card to confirm.
  */
+import { calendarWeek, upcomingMeetings } from '../calendar/routes.js';
+import { slotLabel } from '../replies/booking.js';
 import { AIMessage, HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { convertToOpenAITool } from '@langchain/core/utils/function_calling';
@@ -55,7 +57,7 @@ Rules:
 - If the recruiter asks for two things at once, do both in the same step. A status change plus an email ("reject her and send a mail") is ONE call that shows both cards: propose_status_change with alsoEmail (rejection when rejecting), or propose_email with alsoMoveTo. Never ask what an email should say first: draft it (the recruiter edits it on the card before sending).
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To email MANY candidates (outreach, a campaign, a Day 0/3/7 sequence) use propose_campaign (and propose_approve_campaign); to email ONE candidate (a rejection, an update, anything else) use propose_email.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review), reject them at any time (and restore a rejected one to their earlier status), or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. For funnel, reply/interested rate, meetings or hires questions, use get_hiring_stats (the Dashboard page shows the same numbers). BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review), reject them at any time (and restore a rejected one to their earlier status), or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked; the booking page offers only the free hours of the team calendar (Sunday-Thursday, 9 AM-6 PM; show_calendar reads it, busy hours are blocked on the Calendar page). For funnel, reply/interested rate, meetings or hires questions, use get_hiring_stats (the Dashboard page shows the same numbers). BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -335,6 +337,31 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
 
   // ---------- Real mode: LangGraph agent with tools ----------
   const tools = [
+    tool(
+      async ({ week }) => {
+        // The team calendar, as the Calendar page shows it: booked calls and free / busy hours.
+        const day = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? new Date(`${week}T12:00:00+06:00`) : new Date();
+        const [calendar, upcoming] = await Promise.all([calendarWeek(day), upcomingMeetings(10)]);
+        const time = (d: Date) => new Date(d).toLocaleTimeString('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
+        const lines = calendar.days.map((d) => {
+          const label = new Date(`${d.date}T12:00:00+06:00`).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', weekday: 'short', day: 'numeric', month: 'short' });
+          const free = d.slots.filter((s) => s.state === 'free').map((s) => time(s.start));
+          const busy = d.slots.filter((s) => s.state === 'busy').map((s) => time(s.start));
+          const booked = d.slots.flatMap((s) => (s.state === 'booked' ? [`${time(s.start)} ${s.meeting.candidateName} (${s.meeting.jobCode})`] : []));
+          return `${label}: free ${free.join(', ') || 'none'}${busy.length ? ` | busy ${busy.join(', ')}` : ''}${booked.length ? ` | calls ${booked.join(', ')}` : ''}`;
+        });
+        const next = upcoming.map((m) => `${slotLabel(new Date(m.start!))}: ${m.candidateName} (${m.jobCode} ${m.jobTitle ?? ''})`);
+        return `Team calendar, Sunday to Thursday, 9:00-18:00 Dhaka time, 1-hour slots (candidates book free hours on their booking link; busy hours are blocked by hand on the Calendar page).\nWeek of ${calendar.weekStart}:\n${lines.join('\n')}\nUpcoming booked calls: ${next.length ? `\n${next.join('\n')}` : 'none'}`;
+      },
+      {
+        name: 'show_calendar',
+        description:
+          'Read the team calendar: upcoming booked calls with candidates, and the free / busy / booked hours of a week (Sunday-Thursday, 9 AM-6 PM Dhaka time). Use for "what meetings do I have", "when is X\'s call", "am I free on Monday at 3". Blocking busy hours is done by the recruiter on the Calendar page.',
+        schema: z.object({
+          week: z.string().optional().describe('Any date in the week to show, as YYYY-MM-DD. Leave empty for this week.'),
+        }),
+      },
+    ),
     tool(
       async () => {
         // Use the recruiter's latest long message as the JD, so the model doesn't have

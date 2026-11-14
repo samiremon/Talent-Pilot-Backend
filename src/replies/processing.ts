@@ -15,7 +15,7 @@
  *   4. RESPOND   the AI drafts an answer (none for "unsubscribe": we don't email people who
  *                opted out). Questions are answered ONLY from the job's facts; anything else
  *                is "the recruiter will get back to you". Interested / wants a meeting get a
- *                personal booking link (/book/:token, a few time slots to pick from).
+ *                personal booking link (/book/:token: the free hours of the team calendar).
  *                The draft waits for approval, unless auto-send is on (REPLY_AUTO_SEND),
  *                which never applies to questions or flagged replies.
  *   5. TELL      the recruiter gets a chat message with the summary and an approve card.
@@ -111,19 +111,6 @@ function mockResponse(label: ReplyLabel, name: string, title: string, recruiter:
   if (label === 'not_interested') return { subject: re, body: `Hi ${first},\n\nThanks for letting me know, and all the best!\n\n${recruiter}` };
   if (label === 'question') return { subject: re, body: `Hi ${first},\n\nGood question. I'll check the details and get back to you shortly.\n\n${recruiter}` };
   return { subject: re, body: `Hi ${first},\n\nGreat to hear from you! Pick a time that suits you for a short call:\n{{BOOKING_LINK}}\n\nBest,\n${recruiter}` };
-}
-
-/** Times offered on the booking page: the next 3 working days at 10:00, 14:00 and 16:00 Dhaka time (UTC+6). */
-export function meetingSlots(now = new Date()): Date[] {
-  const slots: Date[] = [];
-  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  while (slots.length < 9) {
-    day.setUTCDate(day.getUTCDate() + 1);
-    const weekday = new Date(day.getTime() + 6 * 3600_000).getUTCDay(); // in Dhaka
-    if (weekday === 5 || weekday === 6) continue; // Friday / Saturday: the weekend in Bangladesh
-    for (const hour of [10, 14, 16]) slots.push(new Date(day.getTime() + (hour - 6) * 3600_000));
-  }
-  return slots;
 }
 
 /** Moves the candidate to `target` step by step (each step through the normal rules + log). */
@@ -230,7 +217,6 @@ export function replyProcessor({ ai, events, mailer, settings }: { ai: Ai; event
             candidateId: candidate._id,
             replyId: reply._id,
             token: randomBytes(24).toString('base64url'),
-            slots: meetingSlots(),
           });
           meetingId = meeting._id;
           const link = `${settings.appUrl.replace(/\/$/, '')}/api/book/${meeting.token}`;
