@@ -42,6 +42,7 @@ import { jobCode } from '../models/counter.js';
 import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
 import { proposeAction } from './actions.js';
+import { describeStats, hiringStats } from '../stats/dashboard.js';
 
 // The rules. Kept short on purpose: they're sent with EVERY AI call, and Groq's free tier
 // allows 8,000 tokens a minute. Every rule is here; it's just said once instead of twice.
@@ -54,7 +55,7 @@ Rules:
 - If the recruiter asks for two things at once, do both in the same step. A status change plus an email ("reject her and send a mail") is ONE call that shows both cards: propose_status_change with alsoEmail (rejection when rejecting), or propose_email with alsoMoveTo. Never ask what an email should say first: draft it (the recruiter edits it on the card before sending).
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
 - Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To email MANY candidates (outreach, a campaign, a Day 0/3/7 sequence) use propose_campaign (and propose_approve_campaign); to email ONE candidate (a rejection, an update, anything else) use propose_email.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review), reject them at any time (and restore a rejected one to their earlier status), or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review), reject them at any time (and restore a rejected one to their earlier status), or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. For funnel, reply/interested rate, meetings or hires questions, use get_hiring_stats (the Dashboard page shows the same numbers). BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -988,6 +989,32 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
         schema: z.object({
           name: z.string().describe('The name or part of it, e.g. "Sifat"'),
           job: z.string().optional().describe('Job id like "JOB-0003". Leave empty for the open job (or all jobs if none is open).'),
+        }),
+      },
+    ),
+    // READ tool: the Dashboard's numbers (funnel, reply/interested rate, meetings, hires),
+    // from the same function as the Dashboard page, so the chat and the page always agree.
+    tool(
+      async ({ job }) => {
+        if (job) {
+          let found;
+          try {
+            found = await resolveJob(job);
+          } catch {
+            return `There is no job "${job}". Check the job id in the workspace data.`;
+          }
+          const stats = await hiringStats([found._id]);
+          const row = stats.jobs[0];
+          return describeStats(stats, row ? `${row.jobCode ?? 'Job'} "${row.title}"` : 'This job');
+        }
+        return describeStats(await hiringStats());
+      },
+      {
+        name: 'get_hiring_stats',
+        description:
+          'Dashboard numbers: the funnel (how many candidates reached each stage), reply rate, interested rate, meetings booked and hires, for one job or for all jobs (with a line per job). Use for "how is this job doing?", "what is our reply rate?", "how many hires?".',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003" for one job. Leave empty for all jobs.'),
         }),
       },
     ),

@@ -13,6 +13,7 @@ import { jobCode, nextSequence } from '../models/counter.js';
 import { JobModel, REMOTE_POLICIES } from '../models/job.js';
 import { PendingActionModel } from '../models/chat.js';
 import { UserModel } from '../models/user.js';
+import { hiringStats } from '../stats/dashboard.js';
 import { CANDIDATE_STATUSES, type CandidateStatus } from '../pipeline/status.js';
 
 /** { sourced: 3, accepted: 1, ... } with every status present (0 if none). */
@@ -360,40 +361,38 @@ export async function ensureJobNumbers(): Promise<number> {
 }
 
 /**
- * Dashboard numbers across all jobs.
- * Reply rate = candidates who replied (or got further) ÷ candidates we contacted.
- * Based on current statuses for now; becomes exact once emails are tracked.
+ * Dashboard numbers across all jobs (GET /stats/overview).
+ *
+ * The funnel and the rates come from stats/dashboard.ts, which counts how far each
+ * candidate EVER got (current status + status history), so a rejection later on doesn't
+ * erase the reply or the meeting they had. Shared with the chat assistant's stats tool.
+ *
+ *   counts         where candidates are right now (kept for older screens)
+ *   funnel         cumulative: candidates who reached each stage
+ *   replyRate      replied ÷ contacted
+ *   interestedRate interested ÷ replied
+ *   meetings       candidates who reached Meeting booked
+ *   hires          candidates hired
+ *   perJob         the same numbers for every job (the dashboard's per-job table)
  */
 export async function overview() {
-  const [jobs, perJob, recent, tokens] = await Promise.all([
-    JobModel.find({}, { title: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).lean(),
-    countByJob(),
-    listActivity({}, 10),
-    totalUsage(),
-  ]);
-
-  const counts = emptyCounts();
-  for (const jobCounts of perJob.values()) {
-    for (const status of CANDIDATE_STATUSES) counts[status] += jobCounts[status];
-  }
-
-  const repliedOrLater = ['replied', 'interested', 'not_interested', 'meeting_booked', 'interviewed', 'shortlisted', 'hired'] as const;
-  const contactedOrLater = [...repliedOrLater, 'contacted', 'unsubscribed'] as const;
-  const replied = repliedOrLater.reduce((n, s) => n + counts[s], 0);
-  const contacted = contactedOrLater.reduce((n, s) => n + counts[s], 0);
+  const [stats, recent, tokens] = await Promise.all([hiringStats(), listActivity({}, 10), totalUsage()]);
+  const { overall } = stats;
 
   return {
-    activeJobs: jobs.filter((j) => j.status === 'active').length,
-    totalCandidates: total(counts),
-    hires: counts.hired,
-    replyRate: contacted > 0 ? replied / contacted : null,
+    activeJobs: stats.jobs.filter((j) => j.status === 'active').length,
+    totalCandidates: overall.totalCandidates,
+    hires: overall.hires,
+    meetings: overall.meetings,
+    replyRate: overall.replyRate,
+    interestedRate: overall.interestedRate,
     // The token meter: all AI tokens used so far (input = sent to the AI, output = written by it).
     aiTokens: tokens,
-    counts,
+    counts: overall.current,
+    funnel: overall.funnel,
     recentActivity: recent,
-    jobs: jobs.slice(0, 5).map((j) => {
-      const c = perJob.get(String(j._id)) ?? emptyCounts();
-      return { id: String(j._id), title: j.title, status: j.status, totalCandidates: total(c), hired: c.hired };
-    }),
+    perJob: stats.jobs,
+    // The 5 newest jobs (short list kept for compatibility).
+    jobs: stats.jobs.slice(0, 5).map((j) => ({ id: j.id, title: j.title, status: j.status, totalCandidates: j.totalCandidates, hired: j.hires })),
   };
 }
