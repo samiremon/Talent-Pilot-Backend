@@ -124,6 +124,22 @@ describe('candidate replies', () => {
     expect(list.conversations[0].events[1].id).toBe(String(reply._id));
   });
 
+  it('a one-off email (the chat\'s or the popup\'s "Send email") counts too: they can reply to it', async () => {
+    const { agent, job, queue, mailer, ben } = await setup();
+    // Ben got no campaign email: he can't reply yet, and isn't offered.
+    expect((await agent.get(`/jobs/${job.id}/replies`).expect(200)).body.canReply.map((c: { name: string }) => c.name)).not.toContain('Ben Quiet');
+    await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email`).send({ subject: 'Role details', body: 'Hi Ben,\n\nHere are the details.\n\nRina', purpose: 'custom' }).expect(201);
+    // Now he's offered in "Simulate reply", and replying works.
+    expect((await agent.get(`/jobs/${job.id}/replies`).expect(200)).body.canReply.map((c: { name: string }) => c.name)).toContain('Ben Quiet');
+    const reply = await simulate(agent, job.id, String(ben._id), 'Thanks, I am interested. Can we have a call?', queue);
+    expect(reply).toMatchObject({ status: 'done', subject: 'Re: Role details', from: 'ben@example.com' });
+    expect(reply.response?.status).toBe('draft');
+    // Our answer carries the Unsubscribe button from that one-off email.
+    mailer.sent.length = 0;
+    await agent.post(`/jobs/${job.id}/replies/${reply._id}/send`).send({}).expect(200);
+    expect(mailer.sent[0]?.headers?.['List-Unsubscribe']).toMatch(/\/api\/unsubscribe\/[A-Za-z0-9_-]+>$/);
+  });
+
   it('"not interested" and "unsubscribe"', async () => {
     const { agent, job, queue, ana } = await setup();
     const no = await simulate(agent, job.id, String(ana._id), "Thanks, but I'm not interested right now.", queue);

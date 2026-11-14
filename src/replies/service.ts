@@ -15,10 +15,11 @@ import type { Mailer } from '../email/mailer.js';
 import { AppError } from '../errors.js';
 import { resolveJob } from '../jobs/service.js';
 import { CandidateModel } from '../models/candidate.js';
-import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
+import { OutreachMessageModel } from '../models/outreach.js';
 import { MeetingModel, ReplyModel } from '../models/reply.js';
 import { PendingActionModel } from '../models/chat.js';
 import { DirectEmailModel } from '../models/directEmail.js';
+import { emailedCandidateIds, lastEmailTo } from './lastEmail.js';
 import type { TaskEvents } from '../tasks/events.js';
 import type { TaskQueue } from '../tasks/queue.js';
 import { createTask } from '../tasks/service.js';
@@ -42,16 +43,16 @@ export async function simulateReply(deps: ReplyDeps, jobRef: string, candidateId
   if (!Types.ObjectId.isValid(candidateId)) throw AppError.notFound('Candidate not found');
   const candidate = await CandidateModel.findOne({ _id: candidateId, jobId: job._id }).lean();
   if (!candidate) throw AppError.notFound('Candidate not found');
-  // A reply needs something to reply to: their last outreach email.
-  const last = await OutreachMessageModel.findOne({ candidateId: candidate._id, status: 'sent' }).sort({ sentAt: -1 }).lean();
-  if (!last) throw new AppError(400, 'NOT_EMAILED', `${candidate.name} hasn't been emailed yet, so there's nothing to reply to. Send them an outreach email first.`);
-  // The recruiter who sent the outreach gets the notification (fallback: whoever simulates).
-  const campaign = await CampaignModel.findById(last.campaignId, { userId: 1 }).lean();
+  // A reply needs something to reply to: the last email we sent them, from a campaign OR a
+  // one-off email (the popup's or the chat's "Send email").
+  const last = await lastEmailTo(candidate._id);
+  if (!last) throw new AppError(400, 'NOT_EMAILED', `${candidate.name} hasn't been emailed yet, so there's nothing to reply to. Send them an email first.`);
 
   const reply = await ReplyModel.create({
     jobId: job._id,
     candidateId: candidate._id,
-    userId: campaign?.userId ?? new Types.ObjectId(userId),
+    // The recruiter who sent that email gets the notification (fallback: whoever simulates).
+    userId: last.userId ?? new Types.ObjectId(userId),
     source: 'simulated',
     from: candidate.email ?? last.to,
     subject: input.subject || `Re: ${last.subject}`,
@@ -208,8 +209,9 @@ export async function listReplies(jobRef: string) {
   });
   conversations.sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
 
-  // Who can get a simulated reply: people who were emailed and haven't unsubscribed.
-  const emailed = await OutreachMessageModel.distinct('candidateId', { jobId: job._id, status: 'sent' });
+  // Who can get a simulated reply: people who were emailed (campaign or one-off email) and
+  // haven't unsubscribed.
+  const emailed = await emailedCandidateIds(job._id);
   const canReply = (await CandidateModel.find({ _id: { $in: emailed }, status: { $ne: 'unsubscribed' } }, { name: 1, status: 1 }).lean()).map((c) => ({
     id: String(c._id),
     name: c.name,

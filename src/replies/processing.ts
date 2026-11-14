@@ -31,6 +31,7 @@ import { CandidateModel } from '../models/candidate.js';
 import { jobCode } from '../models/counter.js';
 import { JobModel } from '../models/job.js';
 import { OutreachMessageModel } from '../models/outreach.js';
+import { lastEmailTo } from './lastEmail.js';
 import { MeetingModel, REPLY_LABELS, ReplyModel, type ReplyLabel } from '../models/reply.js';
 import { UserModel } from '../models/user.js';
 import { findPath, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
@@ -279,7 +280,7 @@ export function replyProcessor({ ai, events, mailer, settings }: { ai: Ai; event
 
 /**
  * Sends a reply's drafted response (after approval, or auto-send). Uses the candidate's
- * unsubscribe token from their outreach email, so the response has the Unsubscribe button too.
+ * unsubscribe token from the last email we sent them, so the response has the Unsubscribe button too.
  */
 export async function sendReplyResponse(replyId: Types.ObjectId | string, mailer: Mailer, settings: { appUrl: string }, { auto = false, userId = null as string | null } = {}) {
   // Claim it (draft -> sending in one step): it can never be sent twice.
@@ -290,7 +291,8 @@ export async function sendReplyResponse(replyId: Types.ObjectId | string, mailer
     await ReplyModel.updateOne({ _id: reply._id }, { $set: { 'response.status': 'discarded', 'response.error': 'The candidate unsubscribed or has no email.' } });
     return null;
   }
-  const lastSent = await OutreachMessageModel.findOne({ candidateId: candidate._id, unsubscribeToken: { $ne: null } }).sort({ sentAt: -1 }).lean();
+  // The token of the last email we sent them (campaign or one-off), for the Unsubscribe button.
+  const lastSent = await lastEmailTo(candidate._id);
   const headers: Record<string, string> = lastSent?.unsubscribeToken
     ? { 'List-Unsubscribe': `<${settings.appUrl.replace(/\/$/, '')}/api/unsubscribe/${lastSent.unsubscribeToken}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
     : {};

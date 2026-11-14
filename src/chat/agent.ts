@@ -16,6 +16,7 @@
  */
 import { calendarWeek, upcomingMeetings } from '../calendar/routes.js';
 import { slotLabel } from '../replies/booking.js';
+import { emailedCandidateIds } from '../replies/lastEmail.js';
 import { AIMessage, HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { convertToOpenAITool } from '@langchain/core/utils/function_calling';
@@ -621,7 +622,7 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
           return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
         }
         const code = jobCode(found.jobNumber);
-        const emailed = await OutreachMessageModel.distinct('candidateId', { jobId: found._id, status: 'sent' });
+        const emailed = await emailedCandidateIds(found._id); // campaign or one-off email
         const q = name.trim().toLowerCase();
         const people = (await CandidateModel.find({ _id: { $in: emailed } }, { name: 1 }).lean()).filter((c) => c.name.toLowerCase() === q || c.name.toLowerCase().includes(q));
         if (people.length === 0) return `Nobody named "${clean(name, 60)}" in ${code} has been emailed yet, so there's nothing to reply to.`;
