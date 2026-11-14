@@ -17,11 +17,12 @@ Every action can be done in two ways: by asking the AI in the chat, or by hand i
 4. [How the agent works](#4-how-the-agent-works)
 5. [How the background jobs work](#5-how-the-background-jobs-work)
 6. [Why this LLM and agent approach](#6-why-this-llm-and-agent-approach)
-7. [Done, mocked and skipped](#7-done-mocked-and-skipped)
-8. [Trade-offs](#8-trade-offs)
-9. [Configuration](#9-configuration)
-10. [Development and tests](#10-development-and-tests)
-11. [Troubleshooting](#11-troubleshooting)
+7. [Context window optimization](#7-context-window-optimization)
+8. [Done, mocked and skipped](#8-done-mocked-and-skipped)
+9. [Trade-offs](#9-trade-offs)
+10. [Configuration](#10-configuration)
+11. [Development and tests](#11-development-and-tests)
+12. [Troubleshooting](#12-troubleshooting)
 
 More detail on the design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -277,11 +278,15 @@ Anything slow runs on a **BullMQ** queue (Redis) in the separate **worker** cont
 - The recruiting tasks are short, connected and share one context. A **single agent with well-described tools** is simpler, cheaper on tokens and easier to make reliable than several agents passing work between them.
 - LangGraph keeps the loop **explicit and testable**, and lets the graph stop right after a proposal, so the recruiter always approves before anything happens.
 
-### Keeping the context window small
+---
+
+## 7. Context window optimization
+
+Groq's free plan allows **8,000 tokens a minute** for the chat model, so every message to the AI is kept as small as possible without losing what it needs.
 
 **System prompt**
 
-- Kept short on purpose, because it is sent with every call and the free plan allows 8,000 tokens a minute for the chat model.
+- Kept short on purpose, because it is sent with every call.
 - Each rule is stated once.
 
 **Workspace summary**
@@ -322,7 +327,7 @@ Anything slow runs on a **BullMQ** queue (Redis) in the separate **worker** cont
 
 ---
 
-## 7. Done, mocked and skipped
+## 8. Done, mocked and skipped
 
 ### Done
 
@@ -357,7 +362,7 @@ Anything slow runs on a **BullMQ** queue (Redis) in the separate **worker** cont
 
 ---
 
-## 8. Trade-offs
+## 9. Trade-offs
 
 | Decision | Benefit | Cost |
 |---|---|---|
@@ -371,7 +376,7 @@ Anything slow runs on a **BullMQ** queue (Redis) in the separate **worker** cont
 
 ---
 
-## 9. Configuration
+## 10. Configuration
 
 All settings are in `.env`, and each one is explained in `.env.example`. Apply changes with `docker compose up -d`.
 
@@ -390,7 +395,7 @@ All settings are in `.env`, and each one is explained in `.env.example`. Apply c
 
 ---
 
-## 10. Development and tests
+## 11. Development and tests
 
 Requires **Node.js 20 or newer**. The database, queue and inbox still run in Docker.
 
@@ -413,7 +418,7 @@ npm test             # in-memory database and mock AI: no Docker or API key need
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Problem | Fix |
 |---|---|
