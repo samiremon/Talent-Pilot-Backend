@@ -1,7 +1,7 @@
 /**
  * Sourcing tests (mock AI, in-process queue): CSV upload with duplicates skipped, then
  * background scoring with live progress events, grounded evidence, and the safety rules.
- * Uses the real sample files from samples/, so they're checked too.
+ * Uses the test files in test/fixtures/ (a CSV with duplicates and a bad row on purpose).
  */
 import { readFileSync } from 'node:fs';
 import request from 'supertest';
@@ -27,10 +27,10 @@ import { useTestDatabase } from './helpers/db.js';
 useTestDatabase();
 
 const RECRUITER = { email: 'recruiter@example.com', password: 'correct-horse-battery', name: 'Rina' };
-const SAMPLE_CSV = readFileSync(new URL('../samples/candidates.csv', import.meta.url), 'utf8');
+const SAMPLE_CSV = readFileSync(new URL('./fixtures/candidates.csv', import.meta.url), 'utf8');
 const JOB = {
   title: 'Senior React Developer',
-  description: readFileSync(new URL('../samples/job-description.md', import.meta.url), 'utf8'),
+  description: readFileSync(new URL('./fixtures/job-description.md', import.meta.url), 'utf8'),
   mustHaveSkills: ['React', 'TypeScript', 'Next.js', 'Jest'],
   niceToHaveSkills: ['GraphQL', 'Node.js'],
   seniority: 'Senior',

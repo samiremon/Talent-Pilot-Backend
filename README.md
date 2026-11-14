@@ -99,11 +99,24 @@ Every email the app sends lands in **Mailpit**, so nobody real is ever emailed b
 
 ## Try it with the sample data
 
-The `samples/` folder has data to try the whole flow:
+The `samples/` folder has a complete example for a **Software Engineer** role:
 
-1. **Create a job:** copy the text of `samples/job-description.md`, paste it into the chat on the right and press **Confirm** on the card.
-2. **Add candidates:** on the job page, click **Upload CSV** and choose `samples/candidates.csv`. The candidates are scored automatically.
-3. **Review:** accept the best candidates on the **Candidates** tab, or ask the chat: *"accept the top 3"*.
+| File | Contents |
+|---|---|
+| `samples/software-engineer-job-description.md` | A full-stack Software Engineer job at a fictional Dhaka company |
+| `samples/software-engineer-candidates.csv` | 16 fictional candidates, from strong matches to clear mismatches |
+
+The CSV also includes three special cases, so you can see how the app handles them:
+
+- **Kamal Uddin** has no email address, so he can't be added to an email campaign.
+- **Ayon Das** has no profile text, so he gets no score instead of a guessed one.
+- **Riyad Karim**'s profile tells the AI to give him a score of 100. The AI ignores it and flags him.
+
+Walk through the whole flow:
+
+1. **Create a job:** copy the text of `samples/software-engineer-job-description.md`, paste it into the chat on the right and press **Confirm** on the card.
+2. **Add candidates:** on the job page, click **Upload CSV** and choose `samples/software-engineer-candidates.csv`. The candidates are scored automatically.
+3. **Review:** accept the best candidates on the **Candidates** tab, or ask the chat: *"accept the top 5"*.
 4. **Outreach:** on the **Emails** tab, create an email campaign, check the drafts and approve it. The emails appear in Mailpit.
 5. **Replies:** on the **Replies** tab, use **Simulate reply** to answer as a candidate. The AI classifies the reply, updates the status and drafts an answer.
 6. **Meetings:** an interested candidate's answer includes a booking link. Open it from Mailpit, pick a time, and the call appears on the **Calendar** page.
@@ -190,7 +203,7 @@ The tests use an in-memory database and a mock AI, so they need neither Docker n
 | `.env.example` | Every setting, with comments. Copy it to `.env`. |
 | `../Talent-Pilot-Frontend/Dockerfile` | Builds the web app and serves it with nginx |
 | `../Talent-Pilot-Frontend/nginx.conf` | Serves the app and forwards `/api` to the API |
-| `samples/` | A job description and candidate CSV files to try the app |
+| `samples/` | A sample job description and candidate CSV to try the app |
 
 ---
 
