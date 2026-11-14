@@ -18,6 +18,7 @@ import { CandidateModel } from '../models/candidate.js';
 import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
 import { MeetingModel, ReplyModel } from '../models/reply.js';
 import { PendingActionModel } from '../models/chat.js';
+import { DirectEmailModel } from '../models/directEmail.js';
 import type { TaskEvents } from '../tasks/events.js';
 import type { TaskQueue } from '../tasks/queue.js';
 import { createTask } from '../tasks/service.js';
@@ -127,6 +128,7 @@ export async function listReplies(jobRef: string) {
   const people = new Map((await CandidateModel.find({ jobId: job._id }, { name: 1, status: 1, email: 1 }).lean()).map((c) => [String(c._id), c]));
   const meetings = await MeetingModel.find({ jobId: job._id, status: 'booked' }).lean();
   const sent = await OutreachMessageModel.find({ jobId: job._id, status: 'sent', candidateId: { $in: replies.map((r) => r.candidateId) } }).lean();
+  // (outreach for people who only got a one-off email is added below)
 
   type Event =
     | { kind: 'sent'; at: Date; id: string; subject: string; body: string; step: number; day: number }
@@ -147,7 +149,8 @@ export async function listReplies(jobRef: string) {
         response: { subject: string | null; body: string | null; status: string; error: string | null };
       }
     | { kind: 'response'; at: Date; id: string; subject: string | null; body: string | null; autoSent: boolean }
-    | { kind: 'meeting'; at: Date; id: string; slot: Date | null };
+    | { kind: 'meeting'; at: Date; id: string; slot: Date | null }
+    | { kind: 'email'; at: Date; id: string; subject: string; body: string; purpose: string };
 
   const threads = new Map<string, Event[]>();
   const add = (candidateId: unknown, e: Event) => threads.set(String(candidateId), [...(threads.get(String(candidateId)) ?? []), e]);
@@ -172,7 +175,11 @@ export async function listReplies(jobRef: string) {
       add(r.candidateId, { kind: 'response', at: r.response.sentAt, id: `${r._id}-response`, subject: r.response.subject ?? null, body: r.response.body ?? null, autoSent: r.response.autoSent });
     }
   }
-  for (const m of sent) {
+  // One-off emails (e.g. a rejection): they start a conversation even without a reply.
+  const direct = await DirectEmailModel.find({ jobId: job._id }).lean();
+  for (const d of direct) add(d.candidateId, { kind: 'email', at: d.sentAt, id: String(d._id), subject: d.subject, body: d.body, purpose: d.purpose });
+  const sentAll = direct.length ? await OutreachMessageModel.find({ jobId: job._id, status: 'sent', candidateId: { $in: [...threads.keys()].map((id) => new Types.ObjectId(id)) } }).lean() : sent;
+  for (const m of sentAll) {
     if (threads.has(String(m.candidateId))) add(m.candidateId, { kind: 'sent', at: m.sentAt ?? m.updatedAt, id: String(m._id), subject: m.subject, body: m.body, step: m.step, day: m.day });
   }
   for (const m of meetings) {

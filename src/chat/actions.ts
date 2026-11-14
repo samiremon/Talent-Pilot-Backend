@@ -19,6 +19,7 @@ import { changeStatuses } from '../candidates/statusChange.js';
 import { approveCampaign, createCampaign, SEQUENCES, type OutreachDeps } from '../outreach/service.js';
 import { sendResponse, simulateReply, type ReplyDeps } from '../replies/service.js';
 import { createMemoryMailer } from '../email/mailer.js';
+import { sendCandidateEmail, type EmailPurpose } from '../candidates/email.js';
 
 /** What the chat's reply cards need (the mailer sends approved answers; sandbox by default). */
 function replyDeps(deps: SourcingDeps): ReplyDeps {
@@ -160,6 +161,21 @@ export async function confirmAction(
         result = await deleteCandidate(payload.jobId, payload.candidateId, { userId, actor: 'ai' });
         break;
       }
+      case 'send_email': {
+        // payload = { jobId, candidateId, candidateName, subject, body, purpose }. Edited on the card.
+        const payload = action.payload as { jobId: string; candidateId: string; subject: string; body: string; purpose?: EmailPurpose };
+        const r = replyDeps(deps ?? ({} as SourcingDeps));
+        const sent = await sendCandidateEmail(
+          r.mailer,
+          r.replies.appUrl,
+          payload.jobId,
+          payload.candidateId,
+          { subject: (edits?.subject as string | undefined) ?? payload.subject, body: (edits?.body as string | undefined) ?? payload.body, purpose: payload.purpose },
+          { userId, actor: 'ai' },
+        );
+        result = { jobId: payload.jobId, candidateName: sent.name, to: sent.to };
+        break;
+      }
       case 'send_reply': {
         // payload = { jobId, replyId, subject, body }. The recruiter may have edited the text.
         if (!deps) throw new AppError(500, 'NO_QUEUE', 'Background tasks are not available.');
@@ -201,10 +217,22 @@ export async function confirmAction(
       case 'change_status': {
         // payload = { jobId, to, candidates: [{ id, name, allowed, ... }] }. The recruiter may
         // have unticked some people on the card: edits.candidateIds is who's left.
-        const payload = action.payload as { jobId: string; to: CandidateStatus; candidates: { id: string; allowed: boolean }[] };
+        const payload = action.payload as { jobId: string; to: CandidateStatus | 'restore'; candidates: { id: string; allowed: boolean; to?: CandidateStatus | null }[] };
         const ids = (edits?.candidateIds as string[] | undefined) ?? payload.candidates.filter((c) => c.allowed).map((c) => c.id);
-        const moved = await changeStatuses(new Types.ObjectId(payload.jobId), ids, payload.to, { actor: 'ai', userId });
-        result = { jobId: payload.jobId, to: payload.to, changed: moved.changed, skipped: moved.skipped };
+        // Usually one target for everyone; "restore" has one per person (their earlier status).
+        const groups = new Map<CandidateStatus, string[]>();
+        for (const id of ids) {
+          const target = payload.to === 'restore' ? payload.candidates.find((c) => c.id === id)?.to : payload.to;
+          if (target) groups.set(target, [...(groups.get(target) ?? []), id]);
+        }
+        const changed: { id: string; name: string; activityId: string }[] = [];
+        const skipped: { id: string; name: string; reason: string }[] = [];
+        for (const [target, group] of groups) {
+          const moved = await changeStatuses(new Types.ObjectId(payload.jobId), group, target, { actor: 'ai', userId });
+          changed.push(...moved.changed);
+          skipped.push(...moved.skipped);
+        }
+        result = { jobId: payload.jobId, to: payload.to, changed, skipped };
         break;
       }
       case 'update_candidate': {

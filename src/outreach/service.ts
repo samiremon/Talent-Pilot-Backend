@@ -42,7 +42,7 @@ export async function eligibleCandidates(jobId: Types.ObjectId, candidateIds?: s
     jobId,
     status: { $in: ['draft', 'approved', 'sending'] },
   });
-  const filter: Record<string, unknown> = { jobId, status: 'accepted', email: { $type: 'string' }, _id: { $nin: busy } };
+  const filter: Record<string, unknown> = { jobId, status: 'accepted', email: { $type: 'string' }, doNotEmail: { $ne: true }, _id: { $nin: busy } };
   if (candidateIds?.length) filter._id = { $in: candidateIds.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id)), $nin: busy };
   return CandidateModel.find(filter).sort({ score: -1, createdAt: 1 }).lean();
 }

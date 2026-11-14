@@ -29,7 +29,13 @@ function scriptedAi(script: AIMessage[]) {
       },
     }),
   };
-  const ai = { mode: 'live', models: { agent: 'fake', bulk: 'fake', safety: 'fake' }, chatModel: () => model } as unknown as Ai;
+  const ai = {
+    mode: 'live',
+    models: { agent: 'fake', bulk: 'fake', safety: 'fake' },
+    chatModel: () => model,
+    // Drafting inside tools (e.g. an email): the built-in mock answer, like mock mode.
+    structured: async (req: { mock: () => unknown }) => ({ data: req.mock(), usage: { inputTokens: 0, outputTokens: 0 } }),
+  } as unknown as Ai;
   return { ai, seen };
 }
 
@@ -151,5 +157,29 @@ describe('chat agent: AI calls per message', () => {
     expect(result.reply).toMatch(/^Here's a card to move 2 candidates in JOB-0001 to \*\*Accepted\*\*: Sara Ahmed, Sara Khan\./);
     expect(await CandidateModel.countDocuments({ jobId: job._id, status: 'accepted' })).toBe(0); // nothing until Confirm
   });
-});
 
+  it('"reject her and send a mail": one call makes BOTH cards (status + a drafted rejection email)', async () => {
+    const { job, userId } = await setup();
+    const { ai, seen } = scriptedAi([call('propose_status_change', { names: ['Rafi Karim'], to: 'rejected', alsoEmail: 'rejection' })]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'move Rafi to rejected and send him a mail' });
+    expect(seen).toHaveLength(1);
+    expect(result.actionIds).toHaveLength(2);
+    const { PendingActionModel } = await import('../src/models/chat.js');
+    const cards = await PendingActionModel.find({ _id: { $in: result.actionIds } }).lean();
+    expect(cards.map((c) => c.type).sort()).toEqual(['change_status', 'send_email']);
+    const email = cards.find((c) => c.type === 'send_email')!.payload as { to: string; body: string; purpose: string };
+    expect(email).toMatchObject({ to: 'rafi@example.com', purpose: 'rejection' });
+    expect(email.body).toMatch(/^Hi Rafi,/);
+    expect(result.reply).toMatch(/I also drafted an email for you to check and send/);
+  });
+
+  it('the same works when the AI picks the email tool ("send her a mail and reject her")', async () => {
+    const { job, userId } = await setup();
+    const { ai } = scriptedAi([call('propose_email', { name: 'Rafi Karim', alsoMoveTo: 'rejected' })]);
+    const result = await runAgent({ ai, userId, userName: 'Rina', jobId: String(job._id), history: [], text: 'send Rafi a mail and reject him' });
+    const { PendingActionModel } = await import('../src/models/chat.js');
+    const cards = await PendingActionModel.find({ _id: { $in: result.actionIds } }).lean();
+    expect(cards.map((c) => c.type).sort()).toEqual(['change_status', 'send_email']);
+    expect((cards.find((c) => c.type === 'send_email')!.payload as { purpose: string }).purpose).toBe('rejection');
+  });
+});

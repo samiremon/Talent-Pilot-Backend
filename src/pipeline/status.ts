@@ -11,7 +11,9 @@
  *                                   └─> Rejected     └─> Rejected
  *
  *   + "Not accepted" is the REVIEW decision (not a fit, we won't contact them).
- *     "Rejected" is the decision AFTER the interview.
+ *   + "Rejected": the recruiter's "no", possible at ANY time (except after Hired), and
+ *     reversible: a rejected candidate can be restored to the status they had before
+ *     (that one move is checked in candidates/statusChange.ts, which knows the history).
  *   + "Unsubscribed" is possible at any point AFTER Contacted, and stops all emails.
  *
  * Every status change in the app (buttons, chat, AI, background jobs) goes through
@@ -64,26 +66,26 @@ export const STATUS_LABELS: Record<CandidateStatus, string> = {
  */
 export const ALLOWED_MOVES: Record<CandidateStatus, readonly CandidateStatus[]> = {
   // Review: the recruiter accepts each sourced candidate, or marks them "Not accepted".
-  sourced: ['accepted', 'not_accepted'],
+  sourced: ['accepted', 'not_accepted', 'rejected'],
   // Accepted candidates get emailed (-> Contacted), or the recruiter changes their mind.
-  accepted: ['contacted', 'not_accepted'],
+  accepted: ['contacted', 'not_accepted', 'rejected'],
   // ...and back: a "Not accepted" candidate can be accepted after all.
-  not_accepted: ['accepted'],
+  not_accepted: ['accepted', 'rejected'],
   // After the first email, we wait for a reply. They may unsubscribe instead.
-  contacted: ['replied', 'unsubscribed'],
+  contacted: ['replied', 'unsubscribed', 'rejected'],
   // The AI reads the reply and decides. "Wants a meeting" can go straight to Meeting booked.
-  replied: ['interested', 'not_interested', 'meeting_booked', 'unsubscribed'],
-  interested: ['meeting_booked', 'not_interested', 'unsubscribed'],
+  replied: ['interested', 'not_interested', 'meeting_booked', 'unsubscribed', 'rejected'],
+  interested: ['meeting_booked', 'not_interested', 'unsubscribed', 'rejected'],
   // People change their minds: a "not interested" candidate may write back interested.
-  not_interested: ['interested', 'unsubscribed'],
-  meeting_booked: ['interviewed', 'unsubscribed'],
-  // After the interview: Rejected is the recruiter's "no" from here on.
+  not_interested: ['interested', 'unsubscribed', 'rejected'],
+  meeting_booked: ['interviewed', 'unsubscribed', 'rejected'],
   interviewed: ['shortlisted', 'unsubscribed', 'rejected'],
   shortlisted: ['hired', 'unsubscribed', 'rejected'],
-  // Final statuses.
+  // Hired is final. Unsubscribed people can still be marked Rejected (no emails either way).
   hired: [],
+  unsubscribed: ['rejected'],
+  // Rejected: only back to the status they had before (see restoreTarget in statusChange.ts).
   rejected: [],
-  unsubscribed: [],
 };
 
 /** Statuses where no more emails may be sent to the candidate. */

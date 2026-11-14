@@ -86,6 +86,15 @@ export async function listCandidates(jobId: string) {
   if (!(await JobModel.exists({ _id: id }))) throw AppError.notFound('Job not found');
   // Best score first; unscored candidates (null) after the scored ones.
   const rows = await CandidateModel.find({ jobId: id }).sort({ score: -1, createdAt: 1, _id: 1 }).lean();
+  // Rejected people: where "Restore" would take them (the status before the rejection).
+  const rejected = rows.filter((r) => r.status === 'rejected').map((r) => r._id);
+  const restore = new Map<string, string>();
+  if (rejected.length) {
+    const rejections = await ActivityModel.find({ candidateId: { $in: rejected }, type: 'status_changed', toStatus: 'rejected', undone: { $ne: true } })
+      .sort({ createdAt: 1 })
+      .lean();
+    for (const a of rejections) if (a.fromStatus) restore.set(String(a.candidateId), a.fromStatus); // the latest wins
+  }
   return rows.map(({ _id, __v, jobId: job, ...rest }) => {
     void __v;
     return {
@@ -94,6 +103,7 @@ export async function listCandidates(jobId: string) {
       ...rest,
       // Older rows were flagged only in the reason text ("⚠ Profile contains instructions…").
       flagged: Boolean(rest.flagged) || (rest.scoreReason ?? '').startsWith('⚠'),
+      restoreTo: restore.get(String(_id)) ?? null,
     };
   });
 }

@@ -13,7 +13,7 @@
  */
 import { Schema, model, Types, type InferSchemaType } from 'mongoose';
 
-export const ACTION_TYPES = ['create_job', 'update_job', 'delete_job', 'import_csv', 'add_candidate', 'delete_candidate', 'find_candidates', 'score_candidates', 'delete_all_candidates', 'update_candidate', 'change_status', 'create_campaign', 'approve_campaign', 'send_reply', 'simulate_reply'] as const;
+export const ACTION_TYPES = ['create_job', 'update_job', 'delete_job', 'import_csv', 'add_candidate', 'delete_candidate', 'find_candidates', 'score_candidates', 'delete_all_candidates', 'update_candidate', 'change_status', 'create_campaign', 'approve_campaign', 'send_reply', 'simulate_reply', 'send_email'] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 export const ACTION_STATUSES = ['pending', 'confirmed', 'cancelled'] as const;
 

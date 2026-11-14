@@ -85,6 +85,8 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
               ? `Done: added ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} to ${(card.payload as { jobCode?: string }).jobCode ?? 'the job'}. AI scoring has started; I'll post their score and rank here as soon as it's done.`
               : card.type === 'delete_candidate'
               ? `Done: removed ${(card.result as { name?: string } | null)?.name ?? 'the candidate'} from ${(card.result as { jobCode?: string } | null)?.jobCode ?? 'the job'}.`
+            : card.type === 'send_email'
+              ? `Done: emailed ${(card.result as { candidateName?: string } | null)?.candidateName ?? 'the candidate'} (${(card.result as { to?: string } | null)?.to ?? ''}).`
             : card.type === 'send_reply'
               ? `Done: sent the response to ${(card.result as { candidateName?: string } | null)?.candidateName ?? 'the candidate'}.`
             : card.type === 'simulate_reply'
@@ -102,7 +104,7 @@ export function chatRouter(ai: Ai, deps: SourcingDeps): Router {
             : card.type === 'change_status'
               ? (() => {
                   const r = card.result as { to?: string; changed?: { name: string }[]; skipped?: { name: string; reason: string }[] } | null;
-                  const label = STATUS_LABELS[(r?.to ?? 'sourced') as keyof typeof STATUS_LABELS] ?? r?.to;
+                  const label = r?.to === 'restore' ? 'their earlier status' : (STATUS_LABELS[(r?.to ?? 'sourced') as keyof typeof STATUS_LABELS] ?? r?.to);
                   const moved = r?.changed?.length
                     ? `Done: moved ${r.changed.length} candidate${r.changed.length === 1 ? '' : 's'} to ${label}: ${r.changed.map((c) => c.name).join(', ')}.`
                     : `Nobody was moved to ${label}.`;

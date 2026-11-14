@@ -178,6 +178,9 @@ export function replyProcessor({ ai, events, mailer, settings }: { ai: Ai; event
       });
       const label = c.label as ReplyLabel;
 
+      // "Unsubscribe": never email them again, whatever happens to their status.
+      if (label === 'unsubscribe') await CandidateModel.updateOne({ _id: candidate._id }, { $set: { doNotEmail: true } });
+
       // 2. Status (only once per reply: a retry won't move them twice).
       const statusPath = reply.statusPath.length ? reply.statusPath : await moveCandidate(candidate._id, TARGET[label], reply.userId ?? null);
 
@@ -297,7 +300,7 @@ export async function sendReplyResponse(replyId: Types.ObjectId | string, mailer
   const reply = await ReplyModel.findOneAndUpdate({ _id: replyId, 'response.status': 'draft' }, { $set: { 'response.status': 'sending' } }, { new: false });
   if (!reply || !reply.response?.body) return null;
   const candidate = await CandidateModel.findById(reply.candidateId).lean();
-  if (!candidate?.email || candidate.status === 'unsubscribed') {
+  if (!candidate?.email || candidate.status === 'unsubscribed' || candidate.doNotEmail) {
     await ReplyModel.updateOne({ _id: reply._id }, { $set: { 'response.status': 'discarded', 'response.error': 'The candidate unsubscribed or has no email.' } });
     return null;
   }

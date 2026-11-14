@@ -185,3 +185,18 @@ describe('renaming old review rejections', () => {
     expect(await migrateReviewRejections()).toBe(0); // safe to run again
   });
 });
+
+describe('rejecting and restoring', () => {
+  it('rejects at any time, and restores only to the status before the rejection', async () => {
+    const { Types } = await import('mongoose');
+    const { changeCandidateStatus, restoreTarget } = await import('../src/candidates/statusChange.js');
+    const jobId = new Types.ObjectId();
+    const c = await CandidateModel.create({ jobId, source: 'csv', name: 'Ria', email: 'ria@example.com', status: 'interested' });
+    await changeCandidateStatus({ candidateId: c._id, to: 'rejected', actor: 'recruiter' });
+    expect(await restoreTarget(c._id)).toBe('interested');
+    await expect(changeCandidateStatus({ candidateId: c._id, to: 'hired', actor: 'recruiter' })).rejects.toThrow(/can only be restored to Interested/);
+    await changeCandidateStatus({ candidateId: c._id, to: 'interested', actor: 'recruiter' });
+    expect((await CandidateModel.findById(c._id).lean())?.status).toBe('interested');
+  });
+});
+

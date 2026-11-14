@@ -175,3 +175,30 @@ describe('candidate replies', () => {
   });
 });
 
+
+describe('emailing one candidate', () => {
+  it('drafts (AI) and sends a one-off email; it shows in their conversation; never to someone who unsubscribed', async () => {
+    const { app, agent, job, mailer, ana, ben } = await setup();
+    const draft = (await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email/draft`).send({ purpose: 'rejection' }).expect(200)).body;
+    expect(draft).toMatchObject({ to: 'ben@example.com' });
+    expect(draft.body).toMatch(/^Hi Ben,/);
+    expect(mailer.sent).toHaveLength(0); // a draft sends nothing
+
+    await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email`).send({ subject: draft.subject, body: draft.body, purpose: 'rejection' }).expect(201);
+    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent[0]!.headers?.['List-Unsubscribe']).toMatch(/\/api\/unsubscribe\//);
+    const list = (await agent.get(`/jobs/${job.id}/replies`).expect(200)).body;
+    const benThread = list.conversations.find((c: { candidateName: string }) => c.candidateName === 'Ben Quiet');
+    expect(benThread.events.map((e: { kind: string }) => e.kind)).toEqual(['email']);
+
+    // The email's own unsubscribe link works too.
+    const path = new URL(mailer.sent[0]!.headers!['List-Unsubscribe']!.slice(1, -1)).pathname.replace(/^\/api/, '');
+    await request(app).post(path).type('form').send('List-Unsubscribe=One-Click').expect(200);
+    const benNow = (await CandidateModel.findById(ben._id).lean())!;
+    expect(benNow).toMatchObject({ status: 'unsubscribed', doNotEmail: true }); // Accepted -> Contacted -> Unsubscribed
+    // ...and he can never be emailed again.
+    const blocked = await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email/draft`).send({ purpose: 'update' }).expect(400);
+    expect(blocked.body.error.code).toBe('UNSUBSCRIBED');
+    void ana;
+  });
+});

@@ -98,8 +98,8 @@ export function sendOutreachProcessor({
 
       // 2. Still OK to email this person?
       const candidate = await CandidateModel.findById(m.candidateId).lean();
-      if (!candidate || !EMAILABLE.includes(candidate.status as CandidateStatus)) {
-        const why = candidate ? `${candidate.name} is ${STATUS_LABELS[candidate.status as CandidateStatus]}: no more emails` : 'the candidate was removed';
+      if (!candidate || candidate.doNotEmail || !EMAILABLE.includes(candidate.status as CandidateStatus)) {
+        const why = !candidate ? 'the candidate was removed' : candidate.doNotEmail ? `${candidate.name} unsubscribed` : `${candidate.name} is ${STATUS_LABELS[candidate.status as CandidateStatus]}: no more emails`;
         await OutreachMessageModel.updateMany({ campaignId: campaign._id, candidateId: m.candidateId, status: 'approved' }, { $set: { status: 'skipped', note: why } });
         skipped++;
         continue;

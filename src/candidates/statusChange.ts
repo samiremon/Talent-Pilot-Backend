@@ -24,12 +24,41 @@ export interface StatusChangeInput {
   userId?: string | Types.ObjectId | null;
 }
 
+/**
+ * The status a rejected candidate had before the rejection (where "Restore" takes them),
+ * from the activity log. Null if they aren't rejected or there's no record.
+ */
+export async function restoreTarget(candidateId: string | Types.ObjectId): Promise<CandidateStatus | null> {
+  const last = await ActivityModel.findOne({ candidateId, type: 'status_changed', toStatus: 'rejected', undone: { $ne: true } })
+    .sort({ createdAt: -1 })
+    .lean();
+  return (last?.fromStatus as CandidateStatus | undefined) ?? null;
+}
+
+/**
+ * Is this move allowed? The pipeline rules (checkMove), plus one move that needs the
+ * history: a rejected candidate may go back to the status they had before (and only there).
+ */
+export async function canMove(candidateId: string | Types.ObjectId, from: CandidateStatus, to: CandidateStatus, name = 'This candidate') {
+  if (from === 'rejected' && to !== 'rejected') {
+    const back = await restoreTarget(candidateId);
+    if (back && to === back) return { allowed: true as const, reason: '' };
+    return {
+      allowed: false as const,
+      reason: back
+        ? `${name} can only be restored to ${STATUS_LABELS[back]} (the status before the rejection).`
+        : `${name} is Rejected and there's no earlier status to restore.`,
+    };
+  }
+  return checkMove(from, to, name);
+}
+
 export async function changeCandidateStatus({ candidateId, to, actor, userId = null }: StatusChangeInput) {
   const candidate = await CandidateModel.findById(candidateId);
   if (!candidate) throw AppError.notFound('Candidate not found');
 
   const from = candidate.status as CandidateStatus;
-  const check = checkMove(from, to, candidate.name);
+  const check = await canMove(candidate._id, from, to, candidate.name);
   if (!check.allowed) throw new AppError(409, 'STATUS_NOT_ALLOWED', check.reason, { from, to });
 
   // Save only if the status is STILL what we just read. If something else changed it in

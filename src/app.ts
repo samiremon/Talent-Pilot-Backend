@@ -23,6 +23,7 @@ import { outreachRouter } from './outreach/routes.js';
 import { unsubscribeRouter } from './outreach/unsubscribe.js';
 import { bookingRouter } from './replies/booking.js';
 import { notificationsRouter } from './notifications/service.js';
+import { candidateEmailRouter } from './candidates/emailRoutes.js';
 import type { ReplySettings } from './replies/processing.js';
 import { repliesRouter, simulateReplyRouter } from './replies/routes.js';
 import { createMemoryMailer, type Mailer } from './email/mailer.js';
@@ -147,6 +148,7 @@ export function createApp({
   app.use('/jobs', requireAuth, sourcingRouter({ queue, events, searchMode }));
   app.use('/jobs', requireAuth, outreachRouter({ queue, events, outreach }));
   app.use('/jobs', requireAuth, repliesRouter({ queue, events, mailer: outreachMailer, replies }));
+  app.use('/jobs', requireAuth, candidateEmailRouter({ ai, mailer: outreachMailer, appUrl: replies.appUrl }));
   app.use('/simulate-reply', requireAuth, simulateReplyRouter({ queue, events, mailer: outreachMailer, replies }));
   app.use('/jobs', requireAuth, jobsRouter());
   app.use('/stats', requireAuth, statsRouter());
