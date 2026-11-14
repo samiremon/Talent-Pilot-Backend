@@ -89,6 +89,9 @@ describe('candidate replies', () => {
     expect(mailer.sent[0]).toMatchObject({ to: 'ana@example.com', subject: 'Re: let us talk' });
     expect(mailer.sent[0]!.headers?.['List-Unsubscribe']).toMatch(/\/api\/unsubscribe\//);
     await agent.post(`/jobs/${job.id}/replies/${reply._id}/send`).send({}).expect(409); // only once
+    // Sent from the Replies tab: the chat says so too.
+    const sentNote = await ChatMessageModel.findOne({ jobId: job.id }).sort({ createdAt: -1 }).lean();
+    expect(sentNote?.text).toBe('Sent your answer to Ana Reply (from the Replies tab).');
     // The chat's "Answer Ana" card closed itself (no Send button on an answer that's out).
     const { PendingActionModel } = await import('../src/models/chat.js');
     expect((await PendingActionModel.findById(note!.actionId).lean())?.status).toBe('confirmed');
