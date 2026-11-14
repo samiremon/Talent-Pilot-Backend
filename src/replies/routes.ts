@@ -13,6 +13,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { AppError, asyncHandler } from '../errors.js';
 import { CandidateModel } from '../models/candidate.js';
+import { ReplyModel } from '../models/reply.js';
+import { addSystemNote } from '../chat/service.js';
 import { discardResponse, listReplies, sendResponse, simulateReply, updateResponse, type ReplyDeps } from './service.js';
 
 const editBody = z.object({ subject: z.string().max(300).optional(), body: z.string().max(5000).optional() });
@@ -40,7 +42,12 @@ export function repliesRouter(deps: ReplyDeps): Router {
   router.post(
     '/:id/replies/:replyId/send',
     asyncHandler(async (req, res) => {
-      res.json(await sendResponse(deps, req.params.id as string, req.params.replyId as string, req.user!.id, editBody.parse(req.body ?? {})));
+      const result = await sendResponse(deps, req.params.id as string, req.params.replyId as string, req.user!.id, editBody.parse(req.body ?? {}));
+      // Sent from the Replies tab: say so in the recruiter's chat too (a chat card posts its own note).
+      const reply = await ReplyModel.findById(req.params.replyId, { candidateId: 1, jobId: 1 }).lean();
+      const candidate = reply ? await CandidateModel.findById(reply.candidateId, { name: 1 }).lean() : null;
+      if (reply && candidate) await addSystemNote(req.user!.id, `Sent your answer to ${candidate.name} (from the Replies tab).`, String(reply.jobId));
+      res.json(result);
     }),
   );
   router.post(

@@ -18,6 +18,7 @@ import { CandidateModel } from '../models/candidate.js';
 import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
 import { MeetingModel, ReplyModel } from '../models/reply.js';
 import { PendingActionModel } from '../models/chat.js';
+import { DirectEmailModel } from '../models/directEmail.js';
 import type { TaskEvents } from '../tasks/events.js';
 import type { TaskQueue } from '../tasks/queue.js';
 import { createTask } from '../tasks/service.js';
@@ -112,12 +113,101 @@ async function closeReplyCards(replyId: Types.ObjectId, status: 'confirmed' | 'c
   );
 }
 
-/** The Replies tab: newest first, with the candidate's name/status and the meeting, if any. */
+/**
+ * The Replies tab, as CONVERSATIONS: one per candidate who replied, newest activity first.
+ * Each conversation lists everything in order, start to end:
+ *   sent      our outreach emails (first email, follow-ups)
+ *   reply     their replies, with the AI's reading (label, summary, status change, ...) and
+ *             the drafted answer if it's still waiting (to edit and send right there)
+ *   response  our answers that went out
+ *   meeting   the call they booked
+ */
 export async function listReplies(jobRef: string) {
   const job = await resolveJob(jobRef);
-  const replies = await ReplyModel.find({ jobId: job._id }).sort({ receivedAt: -1 }).limit(200).lean();
+  const replies = await ReplyModel.find({ jobId: job._id }).sort({ receivedAt: 1 }).limit(1000).lean();
   const people = new Map((await CandidateModel.find({ jobId: job._id }, { name: 1, status: 1, email: 1 }).lean()).map((c) => [String(c._id), c]));
-  const meetings = new Map((await MeetingModel.find({ jobId: job._id }).lean()).map((m) => [String(m._id), m]));
+  const meetings = await MeetingModel.find({ jobId: job._id, status: 'booked' }).lean();
+  const sent = await OutreachMessageModel.find({ jobId: job._id, status: 'sent', candidateId: { $in: replies.map((r) => r.candidateId) } }).lean();
+  // (outreach for people who only got a one-off email is added below)
+
+  type Event =
+    | { kind: 'sent'; at: Date; id: string; subject: string; body: string; step: number; day: number }
+    | {
+        kind: 'reply';
+        at: Date;
+        id: string;
+        subject: string;
+        body: string;
+        status: string;
+        error: string | null;
+        label: string | null;
+        confidence: number | null;
+        summary: string | null;
+        flagged: boolean;
+        statusPath: string[];
+        followUpsStopped: number;
+        response: { subject: string | null; body: string | null; status: string; error: string | null };
+      }
+    | { kind: 'response'; at: Date; id: string; subject: string | null; body: string | null; autoSent: boolean }
+    | { kind: 'meeting'; at: Date; id: string; slot: Date | null }
+    | { kind: 'email'; at: Date; id: string; subject: string; body: string; purpose: string };
+
+  const threads = new Map<string, Event[]>();
+  const add = (candidateId: unknown, e: Event) => threads.set(String(candidateId), [...(threads.get(String(candidateId)) ?? []), e]);
+  for (const r of replies) {
+    add(r.candidateId, {
+      kind: 'reply',
+      at: r.receivedAt,
+      id: String(r._id),
+      subject: r.subject,
+      body: r.body,
+      status: r.status,
+      error: r.error ?? null,
+      label: r.label ?? null,
+      confidence: r.confidence ?? null,
+      summary: r.summary ?? null,
+      flagged: r.flagged,
+      statusPath: r.statusPath,
+      followUpsStopped: r.followUpsStopped,
+      response: { subject: r.response?.subject ?? null, body: r.response?.body ?? null, status: r.response?.status ?? 'none', error: r.response?.error ?? null },
+    });
+    if (r.response?.status === 'sent' && r.response.sentAt) {
+      add(r.candidateId, { kind: 'response', at: r.response.sentAt, id: `${r._id}-response`, subject: r.response.subject ?? null, body: r.response.body ?? null, autoSent: r.response.autoSent });
+    }
+  }
+  // One-off emails (e.g. a rejection): they start a conversation even without a reply.
+  const direct = await DirectEmailModel.find({ jobId: job._id }).lean();
+  for (const d of direct) add(d.candidateId, { kind: 'email', at: d.sentAt, id: String(d._id), subject: d.subject, body: d.body, purpose: d.purpose });
+  const sentAll = direct.length ? await OutreachMessageModel.find({ jobId: job._id, status: 'sent', candidateId: { $in: [...threads.keys()].map((id) => new Types.ObjectId(id)) } }).lean() : sent;
+  for (const m of sentAll) {
+    if (threads.has(String(m.candidateId))) add(m.candidateId, { kind: 'sent', at: m.sentAt ?? m.updatedAt, id: String(m._id), subject: m.subject, body: m.body, step: m.step, day: m.day });
+  }
+  for (const m of meetings) {
+    if (threads.has(String(m.candidateId))) add(m.candidateId, { kind: 'meeting', at: m.bookedAt ?? m.updatedAt, id: String(m._id), slot: m.slot ?? null });
+  }
+
+  const conversations = [...threads.entries()].map(([candidateId, events]) => {
+    events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    const lastReply = [...events].reverse().find((e) => e.kind === 'reply') as Extract<Event, { kind: 'reply' }> | undefined;
+    const person = people.get(candidateId);
+    return {
+      candidateId,
+      candidateName: person?.name ?? 'Removed candidate',
+      candidateStatus: person?.status ?? null,
+      email: person?.email ?? null,
+      lastAt: events[events.length - 1]!.at,
+      replies: events.filter((e) => e.kind === 'reply').length,
+      // For the list: the latest reply's label / summary, and whether an answer is waiting.
+      label: lastReply?.label ?? null,
+      summary: lastReply?.summary ?? null,
+      processing: events.some((e) => e.kind === 'reply' && e.status === 'processing'),
+      waiting: events.some((e) => e.kind === 'reply' && e.response.status === 'draft'),
+      booked: events.some((e) => e.kind === 'meeting'),
+      events,
+    };
+  });
+  conversations.sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
+
   // Who can get a simulated reply: people who were emailed and haven't unsubscribed.
   const emailed = await OutreachMessageModel.distinct('candidateId', { jobId: job._id, status: 'sent' });
   const canReply = (await CandidateModel.find({ _id: { $in: emailed }, status: { $ne: 'unsubscribed' } }, { name: 1, status: 1 }).lean()).map((c) => ({
@@ -125,31 +215,5 @@ export async function listReplies(jobRef: string) {
     name: c.name,
     status: c.status,
   }));
-  return {
-    canReply,
-    replies: replies.map((r) => {
-      const meeting = r.meetingId ? meetings.get(String(r.meetingId)) : undefined;
-      return {
-        id: String(r._id),
-        candidateId: String(r.candidateId),
-        candidateName: people.get(String(r.candidateId))?.name ?? 'Removed candidate',
-        candidateStatus: people.get(String(r.candidateId))?.status ?? null,
-        source: r.source,
-        from: r.from,
-        subject: r.subject,
-        body: r.body,
-        receivedAt: r.receivedAt,
-        status: r.status,
-        error: r.error,
-        label: r.label,
-        confidence: r.confidence,
-        summary: r.summary,
-        flagged: r.flagged,
-        statusPath: r.statusPath,
-        followUpsStopped: r.followUpsStopped,
-        response: r.response,
-        meeting: meeting ? { status: meeting.status, slot: meeting.slot, bookedAt: meeting.bookedAt } : null,
-      };
-    }),
-  };
+  return { canReply, conversations };
 }

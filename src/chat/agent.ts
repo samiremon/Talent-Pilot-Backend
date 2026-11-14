@@ -35,11 +35,14 @@ import { CampaignModel, OutreachMessageModel } from '../models/outreach.js';
 import { eligibleCandidates } from '../outreach/service.js';
 import { ReplyModel } from '../models/reply.js';
 import { MAX_PAGES, RESULTS_PER_PAGE, SEARCH_SOURCES, suggestSearches } from '../sourcing/search.js';
-import { CANDIDATE_STATUSES, checkMove, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
+import { CANDIDATE_STATUSES, STATUS_LABELS, type CandidateStatus } from '../pipeline/status.js';
+import { canMove, restoreTarget } from '../candidates/statusChange.js';
+import { draftCandidateEmail } from '../candidates/email.js';
 import { jobCode } from '../models/counter.js';
 import { manualCandidateInput } from '../sourcing/manual.js';
 import { REMOTE_POLICIES } from '../models/job.js';
 import { proposeAction } from './actions.js';
+import { describeStats, hiringStats } from '../stats/dashboard.js';
 
 // The rules. Kept short on purpose: they're sent with EVERY AI call, and Groq's free tier
 // allows 8,000 tokens a minute. Every rule is here; it's just said once instead of twice.
@@ -49,9 +52,10 @@ Scope: ONLY hiring work in TalentPilot (jobs, candidates, scores, pipeline, outr
 
 Rules:
 - Brief, friendly, plain sentences or short bullets. No tables.
+- If the recruiter asks for two things at once, do both in the same step. A status change plus an email ("reject her and send a mail") is ONE call that shows both cards: propose_status_change with alsoEmail (rejection when rejecting), or propose_email with alsoMoveTo. Never ask what an email should say first: draft it (the recruiter edits it on the card before sending).
 - You can't change anything yourself: propose_* tools only show the recruiter a card with Confirm/Cancel. Never claim something was done unless the conversation shows it was confirmed.
-- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To EMAIL candidates (outreach, a campaign, "send them an email", a Day 0/3/7 sequence) use propose_campaign, and propose_approve_campaign to approve sending.
-- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review; "reject" before contact means Not accepted, and it can be undone back to Accepted) or move them to any later status ("accept the top 5", "mark Rahim as hired"; "Rejected" is only after the interview), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
+- Never invent facts about jobs or candidates: use the workspace data and tools; if unknown, say so. Never say you can't see a candidate's score: look it up (find_candidate, or list_job_candidates 10 at a time). For questions about which candidates HAVE an email address (who has one, who doesn't, what it is), use list_candidate_emails. To email MANY candidates (outreach, a campaign, a Day 0/3/7 sequence) use propose_campaign (and propose_approve_campaign); to email ONE candidate (a rejection, an update, anything else) use propose_email.
+- You can: create a job from a pasted job description, edit or delete a job, add ONE candidate (scored automatically), add/change a candidate's email or profile link, accept candidates or mark them Not accepted (review), reject them at any time (and restore a rejected one to their earlier status), or move them to any later status ("accept the top 5", "mark Rahim as hired"), remove one or remove all of a job's candidates, find candidates on the web (LinkedIn, GitHub, Stack Overflow, Kaggle; new people are scored automatically), score unscored candidates again, and answer questions about jobs and candidates. Bulk adds: CSV via the 📎 button or Upload CSV on the job page. You can also create an outreach campaign (single email or Day 0/3/7; only Accepted candidates with an email) and approve it for sending (the recruiter checks the drafts first). Candidate replies: when someone replies (or you simulate a reply with propose_simulate_reply), the AI classifies it, updates their status, stops their follow-ups and drafts a response (with a booking link for interested people) that waits for approval (propose_send_reply). Picking a time on the booking link makes them Meeting booked. For funnel, reply/interested rate, meetings or hires questions, use get_hiring_stats (the Dashboard page shows the same numbers). BDJobs and other sites can't be searched (CVs there are private): suggest a CSV upload.
 - Adding a candidate: only details the recruiter gave (experience/skills -> profileText, job title -> headline); leave the rest empty, never invent emails, links or experience.
 - Edits: only the fields asked for, with the values exactly as said.
 - Jobs have ids like JOB-0007; use them. Default to the job open on screen; if it's unclear which job (or person) is meant, ask.
@@ -246,6 +250,88 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       usage,
     };
   }
+
+  // The status-change card ("move Rahim to Rejected"), as a named function so the email tool
+  // can reuse it: "send her a mail and reject her" works whichever tool the AI picks.
+  const proposeStatusChange = async ({ job, to, names, top, alsoEmail, emailNotes }: {
+    job?: string; to: CandidateStatus | 'restore'; names?: string[]; top?: number;
+    alsoEmail?: 'rejection' | 'update' | 'custom'; emailNotes?: string;
+  }) => {
+    const ref = job || jobId;
+    if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+    let found;
+    try {
+      found = await resolveJob(ref);
+    } catch {
+      return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+    }
+    const code = jobCode(found.jobNumber);
+    const everyone = await listCandidates(String(found._id)); // best score first
+    const { ranks } = await candidateRanks(found._id);
+    let picked: typeof everyone = [];
+    const notes: string[] = [];
+    if (names?.length) {
+      for (const raw of names) {
+        const q = raw.trim().toLowerCase();
+        const exact = everyone.filter((c) => c.name.toLowerCase() === q);
+        const matches = exact.length ? exact : everyone.filter((c) => c.name.toLowerCase().includes(q));
+        if (matches.length === 0) notes.push(`No candidate named "${clean(raw, 60)}" in ${code}.`);
+        else if (matches.length > 1) {
+          return `Several candidates in ${code} match "${clean(raw, 60)}": ${matches.slice(0, MAX_MATCHES).map((m) => clean(m.name, 60)).join('; ')}. Ask the recruiter which one (full name).`;
+        } else picked.push(matches[0]!);
+      }
+    } else if (top) {
+      // "Accept the top 5": the best-ranked people who CAN make this move.
+      picked = [];
+      for (const c of everyone) {
+        if (picked.length >= top) break;
+        if (c.score === null) continue;
+        const target = to === 'restore' ? await restoreTarget(c.id) : to;
+        if (target && (await canMove(c.id, c.status as CandidateStatus, target, c.name)).allowed) picked.push(c);
+      }
+      if (picked.length < top) notes.push(`Only ${picked.length} scored candidate(s) in ${code} can be moved now.`);
+    } else {
+      return 'Ask the recruiter which candidates: names, or for example "the top 5".';
+    }
+    if (picked.length === 0) return notes.join(' ') || `Nobody in ${code} can be moved there.`;
+    // "restore" = each rejected person goes back to the status they had before the rejection.
+    const candidates = await Promise.all(
+      picked.map(async (c) => {
+        const target = to === 'restore' ? await restoreTarget(c.id) : to;
+        const check = target ? await canMove(c.id, c.status as CandidateStatus, target, c.name) : { allowed: false, reason: `${c.name} isn't Rejected, so there's nothing to restore.` };
+        return {
+          id: c.id, name: c.name, from: c.status, fromLabel: STATUS_LABELS[c.status as CandidateStatus], to: target, toLabel: target ? STATUS_LABELS[target] : null,
+          score: c.score ?? null, rank: ranks.get(c.id) ?? null, allowed: check.allowed, reason: check.allowed ? null : check.reason,
+        };
+      }),
+    );
+    const toLabel = to === 'restore' ? 'their earlier status (restore)' : STATUS_LABELS[to];
+    const action = await proposeAction(userId, 'change_status', { jobId: String(found._id), jobCode: code, title: found.title, to, toLabel, candidates }, notes);
+    actionIds.push(String(action._id));
+    const ok = candidates.filter((c) => c.allowed).length;
+    cardIntros.push(
+      `Here's a card to move ${ok} candidate${ok === 1 ? '' : 's'} in ${code} to **${toLabel}**${ok ? `: ${candidates.filter((c) => c.allowed).map((c) => (to === 'restore' ? `${c.name} (back to ${c.toLabel})` : c.name)).join(', ')}` : ''}.${candidates.length > ok ? ` ${candidates.length - ok} can't move (the reason is on the card).` : ''}`,
+    );
+    // "...and send them a mail": a "Send email" card per person too (drafted for the purpose).
+    let emailed = 0;
+    if (alsoEmail) {
+      // People who can move, plus people already there ("she's already Rejected, still send the mail").
+      for (const c of candidates.filter((x) => x.allowed || x.from === x.to).slice(0, 5)) {
+        try {
+          const draft = await draftCandidateEmail(ai, String(found._id), c.id, alsoEmail, emailNotes, userId);
+          const card = await proposeAction(userId, 'send_email', {
+            jobId: String(found._id), jobCode: code, candidateId: c.id, candidateName: c.name, to: draft.to, subject: draft.subject, body: draft.body, purpose: alsoEmail,
+          });
+          actionIds.push(String(card._id));
+          emailed++;
+        } catch (err) {
+          cardIntros.push(`(No email for ${c.name}: ${err instanceof Error ? err.message : 'it could not be drafted'})`);
+        }
+      }
+      if (emailed) cardIntros.push(`I also drafted ${emailed === 1 ? 'an email' : `${emailed} emails`} for you to check and send (nothing is sent until you press Send).`);
+    }
+    return `A status card (${ok} to ${toLabel}) is now shown with Confirm/Cancel${emailed ? `, plus ${emailed} "Send email" card(s)` : ''}. Nothing changes until the recruiter confirms.`;
+  };
 
   // ---------- Real mode: LangGraph agent with tools ----------
   const tools = [
@@ -446,6 +532,58 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
+      async ({ name, job, purpose, notes, alsoMoveTo }) => {
+        // "Send her a mail and reject her": the status tool makes BOTH cards (status + email).
+        if (alsoMoveTo) {
+          return proposeStatusChange({
+            job, to: alsoMoveTo, names: [name], emailNotes: notes,
+            alsoEmail: purpose ?? (alsoMoveTo === 'rejected' ? 'rejection' : 'update'),
+          });
+        }
+        const ref = job || jobId;
+        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
+        let found;
+        try {
+          found = await resolveJob(ref);
+        } catch {
+          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
+        }
+        const code = jobCode(found.jobNumber);
+        const q = name.trim().toLowerCase();
+        const people = (await CandidateModel.find({ jobId: found._id }, { name: 1 }).lean()).filter((c) => c.name.toLowerCase() === q || c.name.toLowerCase().includes(q));
+        if (people.length === 0) return `No candidate named "${clean(name, 60)}" in ${code}.`;
+        if (people.length > 1) return `Several candidates match "${clean(name, 60)}": ${people.map((p) => p.name).join('; ')}. Ask which one.`;
+        const c = people[0]!;
+        let draft;
+        try {
+          draft = await draftCandidateEmail(ai, String(found._id), String(c._id), purpose ?? 'custom', notes, userId);
+        } catch (err) {
+          return err instanceof Error ? err.message : "Couldn't draft the email.";
+        }
+        const action = await proposeAction(userId, 'send_email', {
+          jobId: String(found._id), jobCode: code, candidateId: String(c._id), candidateName: c.name, to: draft.to, subject: draft.subject, body: draft.body, purpose: purpose ?? 'custom',
+        });
+        actionIds.push(String(action._id));
+        cardIntros.push(`Here's a draft email to ${clean(c.name, 60)} (${draft.to}). Edit it if you like; nothing is sent until you press Send.`);
+        return `A "Send email" card for ${c.name} is now shown with Send/Cancel.`;
+      },
+      {
+        name: 'propose_email',
+        description:
+          'Propose a one-off email to ONE candidate (e.g. a polite rejection, a status update, or anything the recruiter describes). The AI drafts it from the job facts and the notes; the recruiter edits and sends it from a card. Use when the recruiter asks to email / mail / write to a candidate (outside a campaign). Do not ask for the wording first: draft it right away; the recruiter can edit it on the card.',
+        schema: z.object({
+          name: z.string().describe("The candidate's name"),
+          job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
+          purpose: z.enum(['rejection', 'update', 'custom']).optional().describe('rejection = we are not moving forward; update = a status update; custom = anything else'),
+          notes: z.string().optional().describe("What the email should say, in the recruiter's words (reasons, details)"),
+          alsoMoveTo: z
+            .enum([...CANDIDATE_STATUSES, 'restore'])
+            .optional()
+            .describe('Set ONLY if the recruiter ALSO asks to change their status in the same message (e.g. "send her a mail and reject her" -> rejected): shows the status card too'),
+        }),
+      },
+    ),
+    tool(
       async ({ name, job, text }) => {
         const ref = job || jobId;
         if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
@@ -592,59 +730,21 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
       },
     ),
     tool(
-      async ({ job, to, names, top }) => {
-        const ref = job || jobId;
-        if (!ref) return 'No job is open. Ask the recruiter which job (e.g. JOB-0003).';
-        let found;
-        try {
-          found = await resolveJob(ref);
-        } catch {
-          return `There is no job "${ref}". Check the job id in the workspace data, or ask the recruiter.`;
-        }
-        const code = jobCode(found.jobNumber);
-        const everyone = await listCandidates(String(found._id)); // best score first
-        const { ranks } = await candidateRanks(found._id);
-        let picked: typeof everyone = [];
-        const notes: string[] = [];
-        if (names?.length) {
-          for (const raw of names) {
-            const q = raw.trim().toLowerCase();
-            const exact = everyone.filter((c) => c.name.toLowerCase() === q);
-            const matches = exact.length ? exact : everyone.filter((c) => c.name.toLowerCase().includes(q));
-            if (matches.length === 0) notes.push(`No candidate named "${clean(raw, 60)}" in ${code}.`);
-            else if (matches.length > 1) {
-              return `Several candidates in ${code} match "${clean(raw, 60)}": ${matches.slice(0, MAX_MATCHES).map((m) => clean(m.name, 60)).join('; ')}. Ask the recruiter which one (full name).`;
-            } else picked.push(matches[0]!);
-          }
-        } else if (top) {
-          // "Accept the top 5": the best-ranked people who CAN make this move.
-          picked = everyone.filter((c) => c.score !== null && checkMove(c.status as CandidateStatus, to, c.name).allowed).slice(0, top);
-          if (picked.length < top) notes.push(`Only ${picked.length} scored candidate(s) in ${code} can be moved to ${STATUS_LABELS[to]} now.`);
-        } else {
-          return 'Ask the recruiter which candidates: names, or for example "the top 5".';
-        }
-        if (picked.length === 0) return notes.join(' ') || `Nobody in ${code} can be moved to ${STATUS_LABELS[to]}.`;
-        const candidates = picked.map((c) => {
-          const check = checkMove(c.status as CandidateStatus, to, c.name);
-          return { id: c.id, name: c.name, from: c.status, fromLabel: STATUS_LABELS[c.status as CandidateStatus], score: c.score ?? null, rank: ranks.get(c.id) ?? null, allowed: check.allowed, reason: check.allowed ? null : check.reason };
-        });
-        const action = await proposeAction(userId, 'change_status', { jobId: String(found._id), jobCode: code, title: found.title, to, toLabel: STATUS_LABELS[to], candidates }, notes);
-        actionIds.push(String(action._id));
-        const ok = candidates.filter((c) => c.allowed).length;
-        cardIntros.push(
-          `Here's a card to move ${ok} candidate${ok === 1 ? '' : 's'} in ${code} to **${STATUS_LABELS[to]}**${ok ? `: ${candidates.filter((c) => c.allowed).map((c) => c.name).join(', ')}` : ''}.${candidates.length > ok ? ` ${candidates.length - ok} can't move yet (the reason is on the card).` : ''}`,
-        );
-        return `A status card (${ok} to ${STATUS_LABELS[to]}) is now shown with Confirm/Cancel. Nothing changes until the recruiter presses Confirm.`;
-      },
+      proposeStatusChange,
       {
         name: 'propose_status_change',
         description:
-          'Propose moving candidates of a job to a new pipeline status. Review: accepted / not_accepted (when the recruiter says "reject" or "not a fit" BEFORE contacting, use not_accepted; not_accepted can go back to accepted). Later: contacted, replied, interested, not_interested, meeting_booked, interviewed, shortlisted, hired, unsubscribed, and rejected (ONLY after the interview). Pick them by names, or the top N by score ("accept the top 5"). Shows a card to confirm; the pipeline rules say who can move.',
+          'Propose moving candidates of a job to a new pipeline status: accepted / not_accepted (review), contacted, replied, interested, not_interested, meeting_booked, interviewed, shortlisted, hired, unsubscribed, and rejected (possible at ANY time except after hired). "restore" undoes a rejection (back to their earlier status). Pick them by names, or the top N by score ("accept the top 5"). Shows a card to confirm; the pipeline rules say who can move.',
         schema: z.object({
           job: z.string().optional().describe('Job id like "JOB-0003". Leave empty to use the job open on screen.'),
-          to: z.enum(CANDIDATE_STATUSES).describe('The new status'),
+          to: z.enum([...CANDIDATE_STATUSES, 'restore']).describe('The new status; "restore" puts a Rejected candidate back to the status they had before'),
           names: z.array(z.string()).optional().describe('Candidate names as the recruiter said them'),
           top: z.number().int().min(1).max(100).optional().describe('Or: the best N by score, e.g. 5 for "the top 5"'),
+          alsoEmail: z
+            .enum(['rejection', 'update', 'custom'])
+            .optional()
+            .describe('Set ONLY if the recruiter ALSO asks to email/mail them in the same message (e.g. "reject her and send a mail" -> rejection)'),
+          emailNotes: z.string().optional().describe('What that email should say, if the recruiter said'),
         }),
       },
     ),
@@ -889,6 +989,32 @@ export async function runAgent(input: AgentInput): Promise<AgentResult> {
         schema: z.object({
           name: z.string().describe('The name or part of it, e.g. "Sifat"'),
           job: z.string().optional().describe('Job id like "JOB-0003". Leave empty for the open job (or all jobs if none is open).'),
+        }),
+      },
+    ),
+    // READ tool: the Dashboard's numbers (funnel, reply/interested rate, meetings, hires),
+    // from the same function as the Dashboard page, so the chat and the page always agree.
+    tool(
+      async ({ job }) => {
+        if (job) {
+          let found;
+          try {
+            found = await resolveJob(job);
+          } catch {
+            return `There is no job "${job}". Check the job id in the workspace data.`;
+          }
+          const stats = await hiringStats([found._id]);
+          const row = stats.jobs[0];
+          return describeStats(stats, row ? `${row.jobCode ?? 'Job'} "${row.title}"` : 'This job');
+        }
+        return describeStats(await hiringStats());
+      },
+      {
+        name: 'get_hiring_stats',
+        description:
+          'Dashboard numbers: the funnel (how many candidates reached each stage), reply rate, interested rate, meetings booked and hires, for one job or for all jobs (with a line per job). Use for "how is this job doing?", "what is our reply rate?", "how many hires?".',
+        schema: z.object({
+          job: z.string().optional().describe('Job id like "JOB-0003" for one job. Leave empty for all jobs.'),
         }),
       },
     ),

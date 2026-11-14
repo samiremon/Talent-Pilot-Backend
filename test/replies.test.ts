@@ -89,6 +89,9 @@ describe('candidate replies', () => {
     expect(mailer.sent[0]).toMatchObject({ to: 'ana@example.com', subject: 'Re: let us talk' });
     expect(mailer.sent[0]!.headers?.['List-Unsubscribe']).toMatch(/\/api\/unsubscribe\//);
     await agent.post(`/jobs/${job.id}/replies/${reply._id}/send`).send({}).expect(409); // only once
+    // Sent from the Replies tab: the chat says so too.
+    const sentNote = await ChatMessageModel.findOne({ jobId: job.id }).sort({ createdAt: -1 }).lean();
+    expect(sentNote?.text).toBe('Sent your answer to Ana Reply (from the Replies tab).');
     // The chat's "Answer Ana" card closed itself (no Send button on an answer that's out).
     const { PendingActionModel } = await import('../src/models/chat.js');
     expect((await PendingActionModel.findById(note!.actionId).lean())?.status).toBe('confirmed');
@@ -111,8 +114,12 @@ describe('candidate replies', () => {
     const again = await request(app).post(`/book/${meeting.token}`).type('form').send('slot=2').expect(200);
     expect(again.text).toMatch(/You're booked/); // the first choice stands
     expect((await MeetingModel.findById(meeting._id).lean())?.slot).toEqual(meeting.slots[1]);
+    // One conversation for Ana, start to end: our email, her reply, the booked call.
     const list = (await agent.get(`/jobs/${job.id}/replies`).expect(200)).body;
-    expect(list.replies[0]).toMatchObject({ id: String(reply._id), meeting: { status: 'booked' } });
+    expect(list.conversations).toHaveLength(1);
+    expect(list.conversations[0]).toMatchObject({ candidateName: 'Ana Reply', replies: 1, booked: true, label: 'wants_meeting' });
+    expect(list.conversations[0].events.map((e: { kind: string }) => e.kind)).toEqual(['sent', 'reply', 'meeting']);
+    expect(list.conversations[0].events[1].id).toBe(String(reply._id));
   });
 
   it('"not interested" and "unsubscribe"', async () => {
@@ -146,5 +153,52 @@ describe('candidate replies', () => {
     const res = await agent.post('/simulate-reply').send({ candidateId: String(ana._id), body: 'Interested!' }).expect(202);
     await queue.idle();
     expect((await ReplyModel.findById(res.body.replyId).lean())?.label).toBe('interested');
+  });
+
+  it('a second reply from the same person joins the same conversation; the bell gets a notification', async () => {
+    const { agent, job, queue, ana } = await setup();
+    await simulate(agent, job.id, String(ana._id), 'What is the salary range?', queue);
+    const second = await simulate(agent, job.id, String(ana._id), 'Thanks, sounds good. I am interested.', queue);
+    const list = (await agent.get(`/jobs/${job.id}/replies`).expect(200)).body;
+    expect(list.conversations).toHaveLength(1); // one row per person
+    expect(list.conversations[0]).toMatchObject({ replies: 2, label: 'interested', waiting: true });
+    expect(list.conversations[0].events.filter((e: { kind: string }) => e.kind === 'reply').map((e: { id: string }) => e.id).at(-1)).toBe(String(second._id));
+
+    // The bell: one notification per reply, newest first, unread until opened.
+    const bell = (await agent.get('/notifications').expect(200)).body;
+    expect(bell.unread).toBe(2);
+    expect(bell.notifications[0]).toMatchObject({ type: 'reply', text: 'Ana Reply replied: Interested · response waiting for you', jobCode: 'JOB-0001', candidateId: String(ana._id), read: false });
+    await agent.post(`/notifications/${bell.notifications[0].id}/read`).send({}).expect(200);
+    expect((await agent.get('/notifications').expect(200)).body.unread).toBe(1);
+    await agent.post('/notifications/read-all').send({}).expect(200);
+    expect((await agent.get('/notifications').expect(200)).body.unread).toBe(0);
+  });
+});
+
+
+describe('emailing one candidate', () => {
+  it('drafts (AI) and sends a one-off email; it shows in their conversation; never to someone who unsubscribed', async () => {
+    const { app, agent, job, mailer, ana, ben } = await setup();
+    const draft = (await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email/draft`).send({ purpose: 'rejection' }).expect(200)).body;
+    expect(draft).toMatchObject({ to: 'ben@example.com' });
+    expect(draft.body).toMatch(/^Hi Ben,/);
+    expect(mailer.sent).toHaveLength(0); // a draft sends nothing
+
+    await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email`).send({ subject: draft.subject, body: draft.body, purpose: 'rejection' }).expect(201);
+    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent[0]!.headers?.['List-Unsubscribe']).toMatch(/\/api\/unsubscribe\//);
+    const list = (await agent.get(`/jobs/${job.id}/replies`).expect(200)).body;
+    const benThread = list.conversations.find((c: { candidateName: string }) => c.candidateName === 'Ben Quiet');
+    expect(benThread.events.map((e: { kind: string }) => e.kind)).toEqual(['email']);
+
+    // The email's own unsubscribe link works too.
+    const path = new URL(mailer.sent[0]!.headers!['List-Unsubscribe']!.slice(1, -1)).pathname.replace(/^\/api/, '');
+    await request(app).post(path).type('form').send('List-Unsubscribe=One-Click').expect(200);
+    const benNow = (await CandidateModel.findById(ben._id).lean())!;
+    expect(benNow).toMatchObject({ status: 'unsubscribed', doNotEmail: true }); // Accepted -> Contacted -> Unsubscribed
+    // ...and he can never be emailed again.
+    const blocked = await agent.post(`/jobs/${job.id}/candidates/${ben._id}/email/draft`).send({ purpose: 'update' }).expect(400);
+    expect(blocked.body.error.code).toBe('UNSUBSCRIBED');
+    void ana;
   });
 });

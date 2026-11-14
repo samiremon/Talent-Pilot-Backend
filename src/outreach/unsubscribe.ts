@@ -12,18 +12,20 @@
  * them, in every campaign. The token is random per email, so links can't be guessed.
  */
 import { Router, type Response } from 'express';
-import { changeCandidateStatus } from '../candidates/statusChange.js';
+import { moveCandidate } from '../replies/processing.js';
 import { escapeHtml } from '../email/mailer.js';
 import { asyncHandler } from '../errors.js';
 import { ActivityModel } from '../models/activity.js';
 import { CandidateModel } from '../models/candidate.js';
 import { JobModel } from '../models/job.js';
 import { OutreachMessageModel } from '../models/outreach.js';
+import { DirectEmailModel } from '../models/directEmail.js';
 
 /** Unsubscribes the person behind this token. Returns their name, or null for a bad token. */
 export async function unsubscribeByToken(token: string): Promise<{ name: string; already: boolean } | null> {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
-  const message = await OutreachMessageModel.findOne({ unsubscribeToken: token }).lean();
+  // Outreach emails and one-off emails both carry an unsubscribe token.
+  const message = (await OutreachMessageModel.findOne({ unsubscribeToken: token }).lean()) ?? (await DirectEmailModel.findOne({ unsubscribeToken: token }).lean());
   if (!message) return null;
   const candidate = await CandidateModel.findById(message.candidateId).lean();
   if (!candidate) return null;
@@ -33,10 +35,13 @@ export async function unsubscribeByToken(token: string): Promise<{ name: string;
     { candidateId: candidate._id, status: { $in: ['draft', 'approved'] } },
     { $set: { status: 'skipped', note: `${candidate.name} unsubscribed` } },
   );
+  // The "never email" mark first: it holds whatever their status is.
+  await CandidateModel.updateOne({ _id: candidate._id }, { $set: { doNotEmail: true } });
   if (candidate.status === 'unsubscribed') return { name: candidate.name, already: true };
-  try {
-    await changeCandidateStatus({ candidateId: candidate._id, to: 'unsubscribed', actor: 'system' });
-  } catch {
+  // Then the status, through the normal rules (e.g. Accepted -> Contacted -> Unsubscribed:
+  // they did receive an email).
+  const path = await moveCandidate(candidate._id, 'unsubscribed', null);
+  if (path.length === 0) {
     // A status the rules don't allow to move to Unsubscribed (e.g. Hired): the emails are
     // stopped anyway; note it in the log.
     await ActivityModel.create({
@@ -70,7 +75,9 @@ export function unsubscribeRouter(): Router {
     '/:token',
     asyncHandler(async (req, res) => {
       const token = req.params.token as string;
-      const message = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? await OutreachMessageModel.findOne({ unsubscribeToken: token }).lean() : null;
+      const message = /^[A-Za-z0-9_-]{20,64}$/.test(token)
+        ? ((await OutreachMessageModel.findOne({ unsubscribeToken: token }).lean()) ?? (await DirectEmailModel.findOne({ unsubscribeToken: token }).lean()))
+        : null;
       if (!message) return page(res, 'Link not valid', '<h1>Link not valid</h1><p>This unsubscribe link is not valid or has expired.</p>', 404);
       const job = await JobModel.findById(message.jobId, { title: 1, company: 1 }).lean();
       const about = job ? `the ${escapeHtml(job.title)} role${job.company ? ` at ${escapeHtml(job.company)}` : ''}` : 'this role';
